@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from review_sheep import GitHubPullRequestReader
+from review_sheep import GitHubPullRequestReader, PullRequestSnapshot, SnapshotFile
 
 
 class FakeUser(BaseModel):
@@ -29,12 +29,14 @@ class FakeRepository:
         self.pulls = pulls
         self.pull_details = pull_details
         self.queries: list[dict[str, str]] = []
+        self.requested_pulls: list[int] = []
 
     def get_pulls(self, *, state: str, sort: str, direction: str) -> list[Any]:
         self.queries.append({"state": state, "sort": sort, "direction": direction})
         return self.pulls
 
     def get_pull(self, number: int) -> Any:
+        self.requested_pulls.append(number)
         assert self.pull_details is not None
         assert number == self.pull_details.number
         return self.pull_details
@@ -207,3 +209,58 @@ def test_reader_returns_each_reviewers_effective_review_state() -> None:
             },
         ],
     }
+
+
+def test_reader_fetches_one_stable_pull_request_snapshot() -> None:
+    changed_files = [
+        SimpleNamespace(
+            filename="src/caller.py",
+            status="modified",
+            additions=1,
+            deletions=1,
+            patch="@@ -12 +12 @@\n-old\n+new",
+            previous_filename=None,
+        ),
+        SimpleNamespace(
+            filename="src/new_name.py",
+            status="renamed",
+            additions=2,
+            deletions=0,
+            patch="@@ -0,0 +1,2 @@\n+one\n+two",
+            previous_filename="src/old_name.py",
+        ),
+    ]
+    pull = SimpleNamespace(
+        number=42,
+        head=SimpleNamespace(sha="abc123"),
+        get_files=lambda: changed_files,
+    )
+    repository = FakeRepository([], pull_details=pull)
+    client = FakeGithubClient(repository)
+    reader = GitHubPullRequestReader(client=client, default_repo="acme/widgets")
+
+    snapshot = reader.fetch_snapshot(repo="", number=42)
+
+    assert repository.requested_pulls == [42]
+    assert snapshot == PullRequestSnapshot(
+        repo="acme/widgets",
+        number=42,
+        head_sha="abc123",
+        files=[
+            SnapshotFile(
+                path="src/caller.py",
+                status="modified",
+                additions=1,
+                deletions=1,
+                patch="@@ -12 +12 @@\n-old\n+new",
+            ),
+            SnapshotFile(
+                path="src/new_name.py",
+                status="renamed",
+                additions=2,
+                deletions=0,
+                patch="@@ -0,0 +1,2 @@\n+one\n+two",
+                previous_path="src/old_name.py",
+            ),
+        ],
+    )

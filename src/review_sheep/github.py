@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from review_sheep.domain import PullRequestSnapshot, SnapshotFile
+
 
 class GitHubPullRequestReader:
     """Adapt a PyGithub client to the Inquiry metadata interface."""
@@ -111,3 +113,25 @@ class GitHubPullRequestReader:
             "review_count": len(reviews),
             "reviews": reviews,
         }
+
+    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
+        """Fetch one pull request's head and changed-code snapshot."""
+        target = self._repo(repo)
+        pull = self._client.get_repo(target).get_pull(number)
+        files = [
+            SnapshotFile(
+                path=changed.filename,
+                status=changed.status,
+                additions=changed.additions,
+                deletions=changed.deletions,
+                patch=changed.patch or "",
+                previous_path=changed.previous_filename,
+            )
+            for changed in pull.get_files()
+        ]
+        return PullRequestSnapshot(
+            repo=target,
+            number=number,
+            head_sha=pull.head.sha,
+            files=files,
+        )
