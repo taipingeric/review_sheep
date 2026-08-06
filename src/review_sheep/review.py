@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
 from deepagents import create_deep_agent as _create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.backends.utils import create_file_data
-from deepagents.middleware.subagents import SubAgent
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict
 
@@ -21,6 +22,10 @@ from review_sheep.domain import (
     ReviewError,
     ReviewOperation,
     ReviewWorkspace,
+)
+
+_SERIAL_TOOL_USE_PROMPT = (
+    "Call at most one tool in each assistant message; never call tools in parallel. "
 )
 
 
@@ -78,30 +83,43 @@ class ConventionsAndTestsResult(BaseModel):
     findings: list[ConventionsAndTestsFinding]
 
 
-class ReviewFindings(BaseModel):
-    """Structured output contract for the complete Review workflow."""
-
-    model_config = ConfigDict(frozen=True)
-
-    findings: list[Finding]
-
-
 class DeepAgentReviewRunner:
-    """Adapt a Deep Agent invocation to the Review Runner seam."""
+    """Run one independent deep subagent per Lens over the same workspace."""
 
-    def __init__(self, *, agent: Any) -> None:
-        self._agent = agent
+    def __init__(
+        self, *, subagents: Mapping[Lens, Any], instructions: str = ""
+    ) -> None:
+        configured = set(subagents)
+        required = set(Lens)
+        if configured != required:
+            missing = ", ".join(sorted(lens.value for lens in required - configured))
+            extra = ", ".join(sorted(lens.value for lens in configured - required))
+            raise ValueError(
+                f"DeepAgentReviewRunner requires every Lens; missing={missing!r}, "
+                f"extra={extra!r}"
+            )
+        self._subagents = dict(subagents)
+        self._instructions = instructions.strip()
 
     def run(self, workspace: ReviewWorkspace) -> list[Finding]:
-        """Seed the isolated workspace and validate the agent's output."""
+        """Validate and concatenate raw Lens Findings in stable Lens order."""
+        findings: list[Finding] = []
+        for lens in Lens:
+            findings.extend(self._run_lens(lens, workspace))
+        return findings
+
+    def _run_lens(self, lens: Lens, workspace: ReviewWorkspace) -> list[Finding]:
+        request = (
+            "Review the pull request snapshot in /manifest.json and its diff files "
+            f"through the {lens.value} Lens."
+        )
+        if self._instructions:
+            request += f"\n\nCaller instructions:\n{self._instructions}"
         state = {
             "messages": [
                 {
                     "role": "user",
-                    "content": (
-                        "Review the pull request snapshot in /manifest.json and its "
-                        "diff files through every configured Lens."
-                    ),
+                    "content": request,
                 }
             ],
             "files": {
@@ -109,9 +127,19 @@ class DeepAgentReviewRunner:
                 for path, content in workspace.files.items()
             },
         }
-        result = self._agent.invoke(state)
-        structured = ReviewFindings.model_validate(result["structured_response"])
-        return structured.findings
+        result = self._subagents[lens].invoke(state)
+        return _validate_lens_findings(lens, result["structured_response"])
+
+
+def _validate_lens_findings(lens: Lens, payload: Any) -> list[Finding]:
+    findings: list[Finding] = []
+    if lens is Lens.CORRECTNESS:
+        findings.extend(CorrectnessResult.model_validate(payload).findings)
+    elif lens is Lens.SECURITY:
+        findings.extend(SecurityResult.model_validate(payload).findings)
+    else:
+        findings.extend(ConventionsAndTestsResult.model_validate(payload).findings)
+    return findings
 
 
 class ReviewAgent:
@@ -210,69 +238,59 @@ def create_review_agent(
 
 
 def create_deep_review_agent(
-    *, source: SnapshotSource, model: str | BaseChatModel
+    *,
+    source: SnapshotSource,
+    model: str | BaseChatModel,
+    instructions: str = "",
 ) -> ReviewAgent:
     """Create the production Review workflow with one subagent per Lens."""
-    correctness_subagent = SubAgent(
-        name="correctness-reviewer",
-        description=(
-            "Review the complete pull-request snapshot for correctness defects that "
-            "may span multiple files."
-        ),
-        system_prompt=(
-            "Review the whole pull request, not one file in isolation. Start with "
-            "/manifest.json, inspect every relevant diff under /diffs, trace changed "
-            "contracts across callers and callees, and report only actionable defects. "
-            "Every output item must use the correctness lens."
-        ),
-        response_format=CorrectnessResult,
-    )
-    security_subagent = SubAgent(
-        name="security-reviewer",
-        description=(
-            "Review the complete pull-request snapshot for security defects across "
-            "trust and authorization boundaries."
-        ),
-        system_prompt=(
-            "Review the whole pull request through the security Lens. Start with "
-            "/manifest.json, inspect every relevant diff under /diffs, and trace data, "
-            "identity, authorization, and trust boundaries across files. Report only "
-            "actionable security defects. Every output item must use the security lens."
-        ),
-        response_format=SecurityResult,
-    )
-    conventions_and_tests_subagent = SubAgent(
-        name="conventions-and-tests-reviewer",
-        description=(
-            "Review the complete pull-request snapshot for repository conventions and "
-            "test coverage defects."
-        ),
-        system_prompt=(
-            "Review the whole pull request through the conventions-and-tests Lens. "
-            "Start with /manifest.json, inspect every relevant diff under /diffs, and "
-            "compare related implementation and tests across files. Report only "
-            "actionable convention or test defects. Every output item must use the "
-            "conventions-and-tests lens."
-        ),
-        response_format=ConventionsAndTestsResult,
-    )
-    agent = _create_deep_agent(
+    correctness_subagent = _create_deep_agent(
         model=model,
         backend=StateBackend(),
-        subagents=[
-            correctness_subagent,
-            security_subagent,
-            conventions_and_tests_subagent,
-        ],
-        response_format=ReviewFindings,
+        response_format=ToolStrategy(CorrectnessResult),
         system_prompt=(
-            "Plan the Review, then delegate exactly once to each of the correctness, "
-            "security, and conventions-and-tests reviewers. Concatenate every structured "
-            "Finding in Lens order without merging, deduplicating, ranking, verifying, "
-            "or rewriting any Finding."
+            _SERIAL_TOOL_USE_PROMPT
+            + "Plan the Review, then inspect the whole pull request through the "
+            "correctness Lens, not one file in isolation. Start with /manifest.json, "
+            "inspect every relevant diff under /diffs, trace changed contracts across "
+            "callers and callees, and report only actionable defects. Every output "
+            "item must use the correctness lens."
+        ),
+    )
+    security_subagent = _create_deep_agent(
+        model=model,
+        backend=StateBackend(),
+        response_format=ToolStrategy(SecurityResult),
+        system_prompt=(
+            _SERIAL_TOOL_USE_PROMPT
+            + "Plan the Review, then inspect the whole pull request through the security "
+            "Lens. Start with /manifest.json, inspect every relevant diff under /diffs, "
+            "and trace data, identity, authorization, and trust boundaries across files. "
+            "Report only actionable security defects. Every output item must use the "
+            "security lens."
+        ),
+    )
+    conventions_and_tests_subagent = _create_deep_agent(
+        model=model,
+        backend=StateBackend(),
+        response_format=ToolStrategy(ConventionsAndTestsResult),
+        system_prompt=(
+            _SERIAL_TOOL_USE_PROMPT
+            + "Plan the Review, then inspect the whole pull request through the "
+            "conventions-and-tests Lens. Start with /manifest.json, inspect every "
+            "relevant diff under /diffs, and compare related implementation and tests "
+            "across files. Report only actionable convention or test defects. Every "
+            "output item must use the conventions-and-tests lens."
         ),
     )
     return create_review_agent(
         source=source,
-        runner=DeepAgentReviewRunner(agent=agent),
+        runner=DeepAgentReviewRunner(
+            subagents={
+                Lens.CORRECTNESS: correctness_subagent,
+                Lens.SECURITY: security_subagent,
+                Lens.CONVENTIONS_AND_TESTS: conventions_and_tests_subagent,
+            },
+            instructions=instructions,
+        ),
     )

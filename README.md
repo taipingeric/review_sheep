@@ -80,3 +80,42 @@ else:
 
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
+
+## Try live Review prompts in a loop
+
+Install the project with the provider extra you want to test. For OpenAI:
+
+```bash
+uv sync --extra openai --extra dev
+```
+
+The interactive script reads `GITHUB_REPO`, `GITHUB_TOKEN`, `OPENAI_MODEL`,
+`OPENAI_API_KEY`, and optional `BASE_URL` from `.env`:
+
+```dotenv
+GITHUB_REPO=acme/widgets
+GITHUB_TOKEN=your-read-only-github-token
+OPENAI_MODEL=gpt-5-mini
+OPENAI_API_KEY=your-openai-api-key
+# BASE_URL=https://your-compatible-endpoint/v1
+```
+
+```bash
+uv run python scripts/review_chat.py
+```
+
+Press Enter to accept `GITHUB_REPO` or type another `owner/repo`, then enter an
+open pull-request number. Each following line is sent to all three Review
+Lenses. Type `exit` or `quit` to stop.
+
+```text
+Repository [acme/widgets]: other/project
+Open PR number: 123
+You: Focus on correctness and security regressions
+You: Check whether the new behavior has enough tests
+You: quit
+```
+
+The GitHub token must be able to read the target repository; private
+repositories require corresponding read access. Every prompt prints a local
+Report and never posts reviews, comments, or Findings to GitHub.
