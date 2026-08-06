@@ -44,3 +44,7 @@ dev = [
     "ruff>=0.12.0",
     "mypy>=1.17.0",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
