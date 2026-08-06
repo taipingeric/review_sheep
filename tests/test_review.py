@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from langchain.agents.structured_output import ToolStrategy
 from pydantic import ValidationError
 
 from review_sheep import (
@@ -275,7 +276,7 @@ def test_create_deep_review_agent_runs_every_lens_with_structured_output(
     source = FakeSnapshotSource(snapshot)
     factory_calls: list[dict[str, Any]] = []
     created_subagents: list[FakeLensSubagent] = []
-    findings_by_schema = {
+    findings_by_schema: dict[Any, dict[str, Any]] = {
         review_module.CorrectnessResult: {
             "description": "The caller passes an invalid value.",
             "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
@@ -301,20 +302,32 @@ def test_create_deep_review_agent_runs_every_lens_with_structured_output(
 
     def fake_create_deep_agent(**kwargs: Any) -> FakeLensSubagent:
         factory_calls.append(kwargs)
-        subagent = FakeLensSubagent(findings_by_schema[kwargs["response_format"]])
+        response_format = kwargs["response_format"]
+        schema = (
+            response_format.schema
+            if isinstance(response_format, ToolStrategy)
+            else response_format
+        )
+        subagent = FakeLensSubagent(findings_by_schema[schema])
         created_subagents.append(subagent)
         return subagent
 
     monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
 
-    review = create_deep_review_agent(source=source, model="openai:gpt-5-mini").review(
-        repo="acme/widgets", number=42
-    )
+    review = create_deep_review_agent(
+        source=source,
+        model="openai:gpt-5-mini",
+        instructions="Focus on authorization regressions.",
+    ).review(repo="acme/widgets", number=42)
 
     assert isinstance(review, Review)
     assert source.calls == [{"repo": "acme/widgets", "number": 42}]
     assert len(factory_calls) == 3
-    assert [call["response_format"] for call in factory_calls] == [
+    assert all(
+        isinstance(call["response_format"], ToolStrategy)
+        for call in factory_calls
+    )
+    assert [call["response_format"].schema for call in factory_calls] == [
         review_module.CorrectnessResult,
         review_module.SecurityResult,
         review_module.ConventionsAndTestsResult,
@@ -326,12 +339,22 @@ def test_create_deep_review_agent_runs_every_lens_with_structured_output(
     )
     assert all("Plan" in call["system_prompt"] for call in factory_calls)
     assert all(
+        "Call at most one tool" in call["system_prompt"]
+        and "never call tools in parallel" in call["system_prompt"]
+        for call in factory_calls
+    )
+    assert all(
         lens.value in call["system_prompt"]
         for lens, call in zip(Lens, factory_calls, strict=True)
     )
     assert all(call.get("tools") is None for call in factory_calls)
     assert all(call.get("subagents") is None for call in factory_calls)
     assert all(len(subagent.calls) == 1 for subagent in created_subagents)
+    assert all(
+        "Focus on authorization regressions."
+        in subagent.calls[0]["messages"][0]["content"]
+        for subagent in created_subagents
+    )
     assert [finding.lens for finding in review.findings] == list(Lens)
 
 

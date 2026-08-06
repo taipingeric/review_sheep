@@ -8,6 +8,7 @@ from typing import Any, Literal, Protocol
 from deepagents import create_deep_agent as _create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.backends.utils import create_file_data
+from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
 from pydantic import BaseModel, ConfigDict
 
@@ -21,6 +22,10 @@ from review_sheep.domain import (
     ReviewError,
     ReviewOperation,
     ReviewWorkspace,
+)
+
+_SERIAL_TOOL_USE_PROMPT = (
+    "Call at most one tool in each assistant message; never call tools in parallel. "
 )
 
 
@@ -81,7 +86,9 @@ class ConventionsAndTestsResult(BaseModel):
 class DeepAgentReviewRunner:
     """Run one independent deep subagent per Lens over the same workspace."""
 
-    def __init__(self, *, subagents: Mapping[Lens, Any]) -> None:
+    def __init__(
+        self, *, subagents: Mapping[Lens, Any], instructions: str = ""
+    ) -> None:
         configured = set(subagents)
         required = set(Lens)
         if configured != required:
@@ -92,6 +99,7 @@ class DeepAgentReviewRunner:
                 f"extra={extra!r}"
             )
         self._subagents = dict(subagents)
+        self._instructions = instructions.strip()
 
     def run(self, workspace: ReviewWorkspace) -> list[Finding]:
         """Validate and concatenate raw Lens Findings in stable Lens order."""
@@ -101,14 +109,17 @@ class DeepAgentReviewRunner:
         return findings
 
     def _run_lens(self, lens: Lens, workspace: ReviewWorkspace) -> list[Finding]:
+        request = (
+            "Review the pull request snapshot in /manifest.json and its diff files "
+            f"through the {lens.value} Lens."
+        )
+        if self._instructions:
+            request += f"\n\nCaller instructions:\n{self._instructions}"
         state = {
             "messages": [
                 {
                     "role": "user",
-                    "content": (
-                        "Review the pull request snapshot in /manifest.json and its "
-                        f"diff files through the {lens.value} Lens."
-                    ),
+                    "content": request,
                 }
             ],
             "files": {
@@ -227,15 +238,19 @@ def create_review_agent(
 
 
 def create_deep_review_agent(
-    *, source: SnapshotSource, model: str | BaseChatModel
+    *,
+    source: SnapshotSource,
+    model: str | BaseChatModel,
+    instructions: str = "",
 ) -> ReviewAgent:
     """Create the production Review workflow with one subagent per Lens."""
     correctness_subagent = _create_deep_agent(
         model=model,
         backend=StateBackend(),
-        response_format=CorrectnessResult,
+        response_format=ToolStrategy(CorrectnessResult),
         system_prompt=(
-            "Plan the Review, then inspect the whole pull request through the "
+            _SERIAL_TOOL_USE_PROMPT
+            + "Plan the Review, then inspect the whole pull request through the "
             "correctness Lens, not one file in isolation. Start with /manifest.json, "
             "inspect every relevant diff under /diffs, trace changed contracts across "
             "callers and callees, and report only actionable defects. Every output "
@@ -245,9 +260,10 @@ def create_deep_review_agent(
     security_subagent = _create_deep_agent(
         model=model,
         backend=StateBackend(),
-        response_format=SecurityResult,
+        response_format=ToolStrategy(SecurityResult),
         system_prompt=(
-            "Plan the Review, then inspect the whole pull request through the security "
+            _SERIAL_TOOL_USE_PROMPT
+            + "Plan the Review, then inspect the whole pull request through the security "
             "Lens. Start with /manifest.json, inspect every relevant diff under /diffs, "
             "and trace data, identity, authorization, and trust boundaries across files. "
             "Report only actionable security defects. Every output item must use the "
@@ -257,9 +273,10 @@ def create_deep_review_agent(
     conventions_and_tests_subagent = _create_deep_agent(
         model=model,
         backend=StateBackend(),
-        response_format=ConventionsAndTestsResult,
+        response_format=ToolStrategy(ConventionsAndTestsResult),
         system_prompt=(
-            "Plan the Review, then inspect the whole pull request through the "
+            _SERIAL_TOOL_USE_PROMPT
+            + "Plan the Review, then inspect the whole pull request through the "
             "conventions-and-tests Lens. Start with /manifest.json, inspect every "
             "relevant diff under /diffs, and compare related implementation and tests "
             "across files. Report only actionable convention or test defects. Every "
@@ -273,6 +290,7 @@ def create_deep_review_agent(
                 Lens.CORRECTNESS: correctness_subagent,
                 Lens.SECURITY: security_subagent,
                 Lens.CONVENTIONS_AND_TESTS: conventions_and_tests_subagent,
-            }
+            },
+            instructions=instructions,
         ),
     )
