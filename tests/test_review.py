@@ -58,29 +58,14 @@ class DeterministicReviewRunner:
         ]
 
 
-class FakeDeepAgent:
-    def __init__(self) -> None:
+class FakeLensSubagent:
+    def __init__(self, finding: dict[str, Any]) -> None:
+        self.finding = finding
         self.calls: list[dict[str, Any]] = []
 
     def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
         self.calls.append(state)
-        return {
-            "structured_response": {
-                "findings": [
-                    {
-                        "description": "The changed caller omits the required context.",
-                        "location": {
-                            "path": "src/caller.py",
-                            "start_line": 12,
-                            "end_line": 12,
-                        },
-                        "severity": "high",
-                        "confidence": "confirmed",
-                        "lens": "correctness",
-                    }
-                ]
-            }
-        }
+        return {"structured_response": {"findings": [self.finding]}}
 
 
 class FailingSnapshotSource:
@@ -186,47 +171,91 @@ def test_location_rejects_incomplete_or_invalid_line_ranges(
         Location(**values)
 
 
-def test_deep_agent_runner_receives_the_workspace_and_returns_findings() -> None:
-    snapshot = PullRequestSnapshot(
-        repo="acme/widgets",
-        number=42,
-        head_sha="abc123",
-        files=[
-            SnapshotFile(
-                path="src/caller.py",
-                status="modified",
-                additions=1,
-                deletions=1,
-                patch="@@ -12 +12 @@\n-old\n+new",
-            )
-        ],
-    )
-    source = FakeSnapshotSource(snapshot)
-    deep_agent = FakeDeepAgent()
-    runner = DeepAgentReviewRunner(agent=deep_agent)
-
-    review = create_review_agent(source=source, runner=runner).review(
-        repo="acme/widgets", number=42
-    )
-
-    assert isinstance(review, Review)
-    assert len(deep_agent.calls) == 1
-    files = deep_agent.calls[0]["files"]
-    assert set(files) == {"/manifest.json", "/diffs/src/caller.py.diff"}
-    assert "abc123" in str(files["/manifest.json"])
-    assert "@@ -12 +12 @@" in str(files["/diffs/src/caller.py.diff"])
-    assert review.findings == [
-        Finding(
-            description="The changed caller omits the required context.",
-            location=Location(path="src/caller.py", start_line=12, end_line=12),
-            severity=Severity.HIGH,
-            confidence=Confidence.CONFIRMED,
-            lens=Lens.CORRECTNESS,
+def test_deep_review_runs_every_lens_over_one_snapshot_without_merging() -> None:
+    shared_location = {
+        "path": "src/auth.py",
+        "start_line": 8,
+        "end_line": 8,
+    }
+    subagents = {
+        Lens.CORRECTNESS: FakeLensSubagent(
+            {
+                "description": "Removing actor bypasses authorization.",
+                "location": shared_location,
+                "severity": "high",
+                "confidence": "confirmed",
+                "lens": "correctness",
+            }
+        ),
+        Lens.SECURITY: FakeLensSubagent(
+            {
+                "description": "Removing actor bypasses authorization.",
+                "location": shared_location,
+                "severity": "critical",
+                "confidence": "confirmed",
+                "lens": "security",
+            }
+        ),
+        Lens.CONVENTIONS_AND_TESTS: FakeLensSubagent(
+            {
+                "description": "The authorization regression has no failing test.",
+                "location": {"path": "tests/test_auth.py"},
+                "severity": "medium",
+                "confidence": "likely",
+                "lens": "conventions-and-tests",
+            }
+        ),
+    }
+    source = FakeSnapshotSource(
+        PullRequestSnapshot(
+            repo="acme/widgets",
+            number=42,
+            head_sha="abc123",
+            files=[
+                SnapshotFile(
+                    path="src/auth.py",
+                    status="modified",
+                    additions=1,
+                    deletions=1,
+                    patch="@@ -8 +8 @@\n-authorize(actor)\n+authorize()",
+                ),
+                SnapshotFile(
+                    path="tests/test_auth.py",
+                    status="modified",
+                    additions=1,
+                    deletions=0,
+                    patch="@@ -20,0 +21 @@\n+assert response.ok",
+                ),
+            ],
         )
-    ]
+    )
+
+    result = create_review_agent(
+        source=source,
+        runner=DeepAgentReviewRunner(subagents=subagents),
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert source.calls == [{"repo": "acme/widgets", "number": 42}]
+    expected_files = {
+        "/manifest.json",
+        "/diffs/src/auth.py.diff",
+        "/diffs/tests/test_auth.py.diff",
+    }
+    snapshots = []
+    for subagent in subagents.values():
+        assert len(subagent.calls) == 1
+        files = subagent.calls[0]["files"]
+        assert set(files) == expected_files
+        snapshots.append({path: data["content"] for path, data in files.items()})
+    assert snapshots[0] == snapshots[1] == snapshots[2]
+    assert [
+        finding.model_dump(mode="json", exclude_none=True)
+        for finding in result.findings
+    ] == [subagents[lens].finding for lens in Lens]
 
 
-def test_deep_review_agent_delegates_every_lens_with_structured_output(
+def test_create_deep_review_agent_runs_every_lens_with_structured_output(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     snapshot = PullRequestSnapshot(
@@ -244,12 +273,37 @@ def test_deep_review_agent_delegates_every_lens_with_structured_output(
         ],
     )
     source = FakeSnapshotSource(snapshot)
-    deep_agent = FakeDeepAgent()
     factory_calls: list[dict[str, Any]] = []
+    created_subagents: list[FakeLensSubagent] = []
+    findings_by_schema = {
+        review_module.CorrectnessResult: {
+            "description": "The caller passes an invalid value.",
+            "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
+            "severity": "high",
+            "confidence": "confirmed",
+            "lens": "correctness",
+        },
+        review_module.SecurityResult: {
+            "description": "The changed value crosses a trust boundary.",
+            "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
+            "severity": "critical",
+            "confidence": "likely",
+            "lens": "security",
+        },
+        review_module.ConventionsAndTestsResult: {
+            "description": "The changed behavior has no regression test.",
+            "location": {"path": "src/caller.py"},
+            "severity": "medium",
+            "confidence": "confirmed",
+            "lens": "conventions-and-tests",
+        },
+    }
 
-    def fake_create_deep_agent(**kwargs: Any) -> FakeDeepAgent:
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensSubagent:
         factory_calls.append(kwargs)
-        return deep_agent
+        subagent = FakeLensSubagent(findings_by_schema[kwargs["response_format"]])
+        created_subagents.append(subagent)
+        return subagent
 
     monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
 
@@ -258,29 +312,27 @@ def test_deep_review_agent_delegates_every_lens_with_structured_output(
     )
 
     assert isinstance(review, Review)
-    assert len(factory_calls) == 1
-    call = factory_calls[0]
-    assert call["model"] == "openai:gpt-5-mini"
-    assert call["backend"].__class__.__name__ == "StateBackend"
-    assert "Plan the Review" in call["system_prompt"]
-    assert call["response_format"] is review_module.ReviewFindings
-    assert call.get("tools") is None
-    assert len(call["subagents"]) == 3
-    assert [subagent["name"] for subagent in call["subagents"]] == [
-        "correctness-reviewer",
-        "security-reviewer",
-        "conventions-and-tests-reviewer",
+    assert source.calls == [{"repo": "acme/widgets", "number": 42}]
+    assert len(factory_calls) == 3
+    assert [call["response_format"] for call in factory_calls] == [
+        review_module.CorrectnessResult,
+        review_module.SecurityResult,
+        review_module.ConventionsAndTestsResult,
     ]
-    correctness = call["subagents"][0]
-    assert correctness["response_format"] is review_module.CorrectnessResult
-    assert "whole pull request" in correctness["system_prompt"]
-    assert call["subagents"][1]["response_format"] is review_module.SecurityResult
-    assert (
-        call["subagents"][2]["response_format"]
-        is review_module.ConventionsAndTestsResult
+    assert all(call["model"] == "openai:gpt-5-mini" for call in factory_calls)
+    assert all(
+        call["backend"].__class__.__name__ == "StateBackend"
+        for call in factory_calls
     )
-    assert all("tools" not in subagent for subagent in call["subagents"])
-    assert review.findings[0].lens is Lens.CORRECTNESS
+    assert all("Plan" in call["system_prompt"] for call in factory_calls)
+    assert all(
+        lens.value in call["system_prompt"]
+        for lens, call in zip(Lens, factory_calls, strict=True)
+    )
+    assert all(call.get("tools") is None for call in factory_calls)
+    assert all(call.get("subagents") is None for call in factory_calls)
+    assert all(len(subagent.calls) == 1 for subagent in created_subagents)
+    assert [finding.lens for finding in review.findings] == list(Lens)
 
 
 def test_lens_output_schema_rejects_another_lens_identity() -> None:
