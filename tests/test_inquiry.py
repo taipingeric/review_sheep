@@ -9,7 +9,7 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, ValidationError
 
-from review_sheep import InquiryAnswer, create_inquiry
+from review_sheep import GitHubPullRequestReader, InquiryAnswer, create_inquiry
 
 
 class ScriptedToolCallingModel(BaseChatModel):
@@ -89,6 +89,30 @@ class TruncatedGitHubReader(FakeGitHubReader):
         return result
 
 
+class PullRequestStateReader(FakeGitHubReader):
+    def get_pull_request(self, *, number: int, repo: str) -> dict[str, Any]:
+        self.calls.append(("get_pull_request", {"number": number, "repo": repo}))
+        return {
+            "repo": repo,
+            "number": number,
+            "title": "Keep the flock together",
+            "url": "https://github.com/acme/widgets/pull/42",
+        }
+
+    def get_pull_request_reviews(
+        self, *, number: int, repo: str
+    ) -> dict[str, Any]:
+        self.calls.append(
+            ("get_pull_request_reviews", {"number": number, "repo": repo})
+        )
+        return {
+            "repo": repo,
+            "number": number,
+            "approved_by": ["alice"],
+            "changes_requested_by": [],
+        }
+
+
 def test_inquiry_answer_is_a_serializable_pydantic_contract() -> None:
     answer = InquiryAnswer(text="One open pull request.", incomplete=True)
 
@@ -156,6 +180,100 @@ def test_inquiry_answers_from_read_only_github_metadata() -> None:
         "get_pull_request",
         "get_pull_request_reviews",
     ]
+
+
+def test_inquiry_reads_pull_request_details_and_review_state_through_public_seam(
+) -> None:
+    model = ScriptedToolCallingModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_pull_request",
+                        "args": {"number": 42, "repo": "acme/widgets"},
+                        "id": "call-details",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "get_pull_request_reviews",
+                        "args": {"number": 42, "repo": "acme/widgets"},
+                        "id": "call-reviews",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content=(
+                    "Pull request #42 is approved by alice — "
+                    "https://github.com/acme/widgets/pull/42"
+                )
+            ),
+        ]
+    )
+    github = PullRequestStateReader()
+
+    answer = create_inquiry(model=model, github=github).ask(
+        "What is the review state of acme/widgets#42?"
+    )
+
+    assert answer == InquiryAnswer(
+        text=(
+            "Pull request #42 is approved by alice — "
+            "https://github.com/acme/widgets/pull/42"
+        )
+    )
+    assert github.calls == [
+        ("get_pull_request", {"number": 42, "repo": "acme/widgets"}),
+        ("get_pull_request_reviews", {"number": 42, "repo": "acme/widgets"}),
+    ]
+
+
+def test_inquiry_returns_an_empty_question_as_stable_error_data() -> None:
+    model = ScriptedToolCallingModel(responses=[])
+
+    answer = create_inquiry(model=model, github=FakeGitHubReader()).ask("   ")
+
+    assert answer == InquiryAnswer(error="Inquiry question must not be empty")
+    assert model.seen_messages == []
+
+
+def test_inquiry_contains_missing_repository_configuration_as_tool_data() -> None:
+    model = ScriptedToolCallingModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "list_pull_requests",
+                        "args": {"state": "open", "limit": 10, "repo": ""},
+                        "id": "call-missing-repo",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(content="No repository was configured."),
+        ]
+    )
+    github = GitHubPullRequestReader(client=object())
+
+    answer = create_inquiry(model=model, github=github).ask(
+        "Which pull requests are open?"
+    )
+
+    assert answer == InquiryAnswer(text="No repository was configured.")
+    tool_message = model.seen_messages[-1][-1]
+    assert isinstance(tool_message, ToolMessage)
+    assert tool_message.content == (
+        '{"error": "no repository given and no default repository configured", '
+        '"error_type": "RuntimeError", "operation": "list_pull_requests", '
+        '"repo": ""}'
+    )
 
 
 def test_inquiry_returns_invalid_tool_input_as_data_without_calling_github() -> None:
