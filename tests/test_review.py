@@ -262,6 +262,7 @@ def test_deep_review_agent_delegates_every_lens_with_structured_output(
     call = factory_calls[0]
     assert call["model"] == "openai:gpt-5-mini"
     assert call["backend"].__class__.__name__ == "StateBackend"
+    assert "Plan the Review" in call["system_prompt"]
     assert call["response_format"] is review_module.ReviewFindings
     assert call.get("tools") is None
     assert len(call["subagents"]) == 3

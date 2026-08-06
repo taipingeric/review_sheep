@@ -117,7 +117,15 @@ class GitHubPullRequestReader:
     def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
         """Fetch one pull request's head and changed-code snapshot."""
         target = self._repo(repo)
-        pull = self._client.get_repo(target).get_pull(number)
+        repository = self._client.get_repo(target)
+        pull = repository.get_pull(number)
+        head_sha = pull.head.sha
+        changed_files = list(pull.get_files())
+        current_head_sha = repository.get_pull(number).head.sha
+        if current_head_sha != head_sha:
+            raise RuntimeError(
+                "pull request head changed while fetching snapshot; retry the Review"
+            )
         files = [
             SnapshotFile(
                 path=changed.filename,
@@ -127,11 +135,11 @@ class GitHubPullRequestReader:
                 patch=changed.patch or "",
                 previous_path=changed.previous_filename,
             )
-            for changed in pull.get_files()
+            for changed in changed_files
         ]
         return PullRequestSnapshot(
             repo=target,
             number=number,
-            head_sha=pull.head.sha,
+            head_sha=head_sha,
             files=files,
         )

@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
 from review_sheep import GitHubPullRequestReader, PullRequestSnapshot, SnapshotFile
@@ -40,6 +41,16 @@ class FakeRepository:
         assert self.pull_details is not None
         assert number == self.pull_details.number
         return self.pull_details
+
+
+class ChangingHeadRepository(FakeRepository):
+    def __init__(self, pulls: list[Any]) -> None:
+        super().__init__([])
+        self.pull_sequence = pulls
+
+    def get_pull(self, number: int) -> Any:
+        self.requested_pulls.append(number)
+        return self.pull_sequence[len(self.requested_pulls) - 1]
 
 
 class FakeGithubClient:
@@ -212,6 +223,13 @@ def test_reader_returns_each_reviewers_effective_review_state() -> None:
 
 
 def test_reader_fetches_one_stable_pull_request_snapshot() -> None:
+    file_requests = 0
+
+    def get_files() -> list[Any]:
+        nonlocal file_requests
+        file_requests += 1
+        return changed_files
+
     changed_files = [
         SimpleNamespace(
             filename="src/caller.py",
@@ -233,7 +251,7 @@ def test_reader_fetches_one_stable_pull_request_snapshot() -> None:
     pull = SimpleNamespace(
         number=42,
         head=SimpleNamespace(sha="abc123"),
-        get_files=lambda: changed_files,
+        get_files=get_files,
     )
     repository = FakeRepository([], pull_details=pull)
     client = FakeGithubClient(repository)
@@ -241,7 +259,8 @@ def test_reader_fetches_one_stable_pull_request_snapshot() -> None:
 
     snapshot = reader.fetch_snapshot(repo="", number=42)
 
-    assert repository.requested_pulls == [42]
+    assert repository.requested_pulls == [42, 42]
+    assert file_requests == 1
     assert snapshot == PullRequestSnapshot(
         repo="acme/widgets",
         number=42,
@@ -264,3 +283,36 @@ def test_reader_fetches_one_stable_pull_request_snapshot() -> None:
             ),
         ],
     )
+
+
+def test_reader_rejects_a_snapshot_when_head_changes_during_diff_fetch() -> None:
+    file_requests = 0
+
+    def get_files() -> list[Any]:
+        nonlocal file_requests
+        file_requests += 1
+        return []
+
+    first = SimpleNamespace(
+        number=42,
+        head=SimpleNamespace(sha="old-sha"),
+        get_files=get_files,
+    )
+    second = SimpleNamespace(
+        number=42,
+        head=SimpleNamespace(sha="new-sha"),
+    )
+    repository = ChangingHeadRepository([first, second])
+    reader = GitHubPullRequestReader(
+        client=FakeGithubClient(repository),
+        default_repo="acme/widgets",
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="pull request head changed while fetching snapshot; retry the Review",
+    ):
+        reader.fetch_snapshot(repo="", number=42)
+
+    assert repository.requested_pulls == [42, 42]
+    assert file_requests == 1
