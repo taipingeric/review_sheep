@@ -126,6 +126,33 @@ def test_inquiry_answer_is_a_serializable_pydantic_contract() -> None:
     }
 
 
+def test_inquiry_agent_can_introduce_review_sheep_without_github_tools() -> None:
+    model = ScriptedToolCallingModel(
+        responses=[
+            AIMessage(
+                content=(
+                    "I am Review Sheep, an assistant for understanding and reviewing "
+                    "GitHub pull requests."
+                )
+            )
+        ]
+    )
+    github = FakeGitHubReader()
+
+    answer = create_inquiry_agent(model=model, github=github).ask("Who are you?")
+
+    assert answer == InquiryAnswer(
+        text=(
+            "I am Review Sheep, an assistant for understanding and reviewing "
+            "GitHub pull requests."
+        )
+    )
+    assert github.calls == []
+    assert any(
+        "Review Sheep" in str(message.text) for message in model.seen_messages[0]
+    )
+
+
 @pytest.mark.parametrize(
     "values",
     [

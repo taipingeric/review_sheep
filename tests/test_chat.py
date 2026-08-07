@@ -22,13 +22,19 @@ class FakeGithubClient:
 
 class DeterministicInquiryModel(BaseChatModel):
     seen_messages: list[list[BaseMessage]] = Field(default_factory=list)
+    structured_tool_name: str | None = None
 
     @property
     def _llm_type(self) -> str:
         return "deterministic-inquiry-model"
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> DeterministicInquiryModel:
-        return self
+        tool_names = [tool.name for tool in tools]
+        structured_tool_name = next(
+            (name for name in tool_names if "IntentDecision" in name),
+            None,
+        )
+        return self.model_copy(update={"structured_tool_name": structured_tool_name})
 
     def _generate(
         self,
@@ -38,6 +44,24 @@ class DeterministicInquiryModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         self.seen_messages.append(messages)
+        if self.structured_tool_name is not None:
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": self.structured_tool_name,
+                                    "args": {"intent": "inquiry"},
+                                    "id": "call-intent",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
+                    )
+                ]
+            )
         return ChatResult(
             generations=[
                 ChatGeneration(
@@ -98,8 +122,11 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation(
     )
 
     assert exit_code == 0
-    assert output.getvalue().startswith("Inquiry chatbot ready;")
-    assert "What would you like to know about pull requests?" in output.getvalue()
+    assert output.getvalue().startswith("Review Sheep chatbot ready;")
+    assert (
+        "What would you like to know or review about pull requests?"
+        in output.getvalue()
+    )
     assert errors.getvalue() == ""
     assert github.closed is True
 

@@ -23,6 +23,7 @@ from review_sheep import (
     SnapshotFile,
     create_chatbot_graph,
     create_inquiry_agent,
+    create_intent_classifier,
     create_review_agent,
     render_report,
 )
@@ -32,6 +33,7 @@ class DeterministicModel(BaseChatModel):
     """Return one fixed Inquiry answer without a provider or credentials."""
 
     structured_tool_name: str | None = None
+    route_intent: str = "inquiry"
 
     @property
     def _llm_type(self) -> str:
@@ -46,7 +48,8 @@ class DeterministicModel(BaseChatModel):
             (
                 name
                 for name in names
-                if name
+                if "IntentDecision" in name
+                or name
                 in {
                     "CorrectnessResult",
                     "SecurityResult",
@@ -65,6 +68,17 @@ class DeterministicModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         if self.structured_tool_name is not None:
+            if "IntentDecision" in self.structured_tool_name:
+                args: dict[str, Any] = {"intent": self.route_intent}
+                if self.route_intent == "review":
+                    args.update(
+                        {
+                            "repo": "acme/widgets",
+                            "pull_request_number": 42,
+                        }
+                    )
+            else:
+                args = {"findings": []}
             return ChatResult(
                 generations=[
                     ChatGeneration(
@@ -73,7 +87,7 @@ class DeterministicModel(BaseChatModel):
                             tool_calls=[
                                 {
                                     "name": self.structured_tool_name,
-                                    "args": {"findings": []},
+                                    "args": args,
                                     "id": f"call-{self.structured_tool_name}",
                                     "type": "tool_call",
                                 }
@@ -155,7 +169,16 @@ def main() -> None:
         model=DeterministicModel(),
         github=UnusedGitHubReader(),
     )
-    chatbot = create_chatbot_graph(agent=inquiry_agent)
+    chatbot = create_chatbot_graph(
+        agent=inquiry_agent,
+        classifier=create_intent_classifier(
+            model=DeterministicModel(route_intent="review")
+        ),
+        reviewer=create_review_agent(
+            source=DeterministicSnapshotSource(),
+            runner=DeterministicReviewRunner(),
+        ),
+    )
     chat_state = cast(
         InquiryChatState,
         chatbot.invoke(InquiryChatState(messages=[])),
@@ -163,12 +186,11 @@ def main() -> None:
     assert "pull requests" in str(chat_state["messages"][-1].content)
     chat_state["messages"] = [
         *chat_state["messages"],
-        HumanMessage(content="Which pull request should I inspect?"),
+        HumanMessage(content="Review changed code in acme/widgets#42."),
     ]
     chat_state = cast(InquiryChatState, chatbot.invoke(chat_state))
-    assert chat_state["answer"] == InquiryAnswer(
-        text="Pull request #42: https://github.com/acme/widgets/pull/42"
-    )
+    assert isinstance(chat_state["review"], Review)
+    assert "src/example.py:1" in str(chat_state["messages"][-1].content)
 
     inquiry = create_inquiry_agent(
         model=DeterministicModel(),

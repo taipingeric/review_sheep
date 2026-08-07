@@ -1,37 +1,95 @@
-"""A conversational LangGraph chatbot backed by the Inquiry agent."""
+"""A conversational LangGraph that routes Inquiry and Review intents."""
 
 from __future__ import annotations
 
-from typing import NotRequired
+from collections.abc import Sequence
+from typing import Literal, NotRequired
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from review_sheep.domain import InquiryAnswer
+from review_sheep.domain import (
+    ChatIntent,
+    InquiryAnswer,
+    IntentDecision,
+    Review,
+    ReviewError,
+)
 from review_sheep.inquiry import InquiryAgent
+from review_sheep.intent import IntentClassifier
+from review_sheep.report import render_report
+from review_sheep.review import ReviewAgent
 
 
-class InquiryChatState(MessagesState):
-    """Conversation messages plus the latest structured Inquiry answer."""
+class ChatState(MessagesState):
+    """Conversation messages plus the latest route and structured result."""
 
+    intent: NotRequired[IntentDecision]
     answer: NotRequired[InquiryAnswer]
+    review: NotRequired[Review | ReviewError]
+
+
+class InquiryChatState(ChatState):
+    """Backward-compatible name for the original Inquiry-only chat state."""
+
+
+class _InquiryOnlyClassifier:
+    def classify(self, messages: Sequence[BaseMessage]) -> IntentDecision:
+        return IntentDecision(intent=ChatIntent.INQUIRY)
 
 
 def create_chatbot_graph(
     *,
     agent: InquiryAgent,
+    classifier: IntentClassifier | None = None,
+    reviewer: ReviewAgent | None = None,
 ) -> CompiledStateGraph[
-    InquiryChatState,
+    ChatState,
     None,
-    InquiryChatState,
-    InquiryChatState,
+    ChatState,
+    ChatState,
 ]:
-    """Build a ``START -> Bot -> END`` graph around an Inquiry agent."""
+    """Build an intent-routed LangGraph over Inquiry and Review agents."""
+    intent_classifier = classifier or _InquiryOnlyClassifier()
 
-    def bot(state: InquiryChatState) -> dict[str, object]:
+    def classify_intent(state: ChatState) -> dict[str, object]:
         if not state["messages"]:
-            return _reply("What would you like to know about pull requests?")
+            return {}
+        decision = intent_classifier.classify(state["messages"])
+        previous = state.get("intent")
+        if (
+            decision.intent is ChatIntent.REVIEW
+            and previous is not None
+            and previous.intent is ChatIntent.REVIEW
+        ):
+            decision = decision.model_copy(
+                update={
+                    "repo": decision.repo or previous.repo,
+                    "pull_request_number": (
+                        decision.pull_request_number or previous.pull_request_number
+                    ),
+                }
+            )
+        return {"intent": decision}
+
+    def route(state: ChatState) -> Literal["inquiry", "review", "unrelated"]:
+        decision = state.get("intent")
+        if decision is not None and decision.intent is ChatIntent.REVIEW:
+            return "review"
+        if decision is not None and decision.intent is ChatIntent.UNRELATED:
+            return "unrelated"
+        return "inquiry"
+
+    def bot(state: ChatState) -> dict[str, object]:
+        if not state["messages"]:
+            return _reply("What would you like to know or review about pull requests?")
+
+        decision = state.get("intent")
+        if decision is not None and decision.intent is ChatIntent.UNKNOWN:
+            return _reply(
+                f"Intent classification failed: {decision.error or 'unknown error'}"
+            )
 
         answer = agent.invoke(state["messages"])
         response = answer.text or f"Inquiry failed: {answer.error}"
@@ -40,10 +98,56 @@ def create_chatbot_graph(
             "answer": answer,
         }
 
-    graph = StateGraph(InquiryChatState)
+    def review_bot(state: ChatState) -> dict[str, object]:
+        decision = state["intent"]
+        if reviewer is None:
+            return _reply("Changed-code Review is not configured for this chatbot.")
+        if decision.repo is None:
+            return _reply("Which repository should I review? Enter it as owner/name.")
+        if decision.pull_request_number is None:
+            return _reply(
+                f"Which pull-request number should I review in {decision.repo}?"
+            )
+
+        result = reviewer.review(
+            repo=decision.repo,
+            number=decision.pull_request_number,
+        )
+        if isinstance(result, Review):
+            response = render_report(result).text
+        else:
+            response = (
+                f"Review failed during {result.operation.value}: "
+                f"{result.error_type}: {result.message}"
+            )
+        return {
+            "messages": [AIMessage(content=response)],
+            "review": result,
+        }
+
+    def unrelated_bot(state: ChatState) -> dict[str, object]:
+        return _reply(
+            "I can only help with pull-request metadata or changed-code reviews."
+        )
+
+    graph = StateGraph(ChatState)
+    graph.add_node("IntentClassifier", classify_intent)
     graph.add_node("Bot", bot)
-    graph.add_edge(START, "Bot")
+    graph.add_node("ReviewBot", review_bot)
+    graph.add_node("UnrelatedBot", unrelated_bot)
+    graph.add_edge(START, "IntentClassifier")
+    graph.add_conditional_edges(
+        "IntentClassifier",
+        route,
+        {
+            "inquiry": "Bot",
+            "review": "ReviewBot",
+            "unrelated": "UnrelatedBot",
+        },
+    )
     graph.add_edge("Bot", END)
+    graph.add_edge("ReviewBot", END)
+    graph.add_edge("UnrelatedBot", END)
     return graph.compile()
 
 

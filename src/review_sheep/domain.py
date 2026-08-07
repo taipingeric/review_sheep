@@ -40,6 +40,35 @@ class ReviewOperation(str, Enum):
     RUN_REVIEW = "run_review"
 
 
+class ChatIntent(str, Enum):
+    """The agent path selected for the latest chatbot turn."""
+
+    INQUIRY = "inquiry"
+    REVIEW = "review"
+    UNRELATED = "unrelated"
+    UNKNOWN = "unknown"
+
+
+class IntentDecision(BaseModel):
+    """Structured routing decision produced before a chatbot Bot node."""
+
+    model_config = ConfigDict(frozen=True)
+
+    intent: ChatIntent
+    repo: str | None = Field(default=None, pattern=r"^[^/\s]+/[^/\s]+$")
+    pull_request_number: int | None = Field(default=None, gt=0)
+    error: str | None = None
+
+    @model_validator(mode="after")
+    def require_error_only_for_unknown(self) -> IntentDecision:
+        """Keep an unrelated request distinct from a classifier failure."""
+        if self.intent is ChatIntent.UNKNOWN and self.error is None:
+            raise ValueError("unknown IntentDecision requires an error")
+        if self.intent is not ChatIntent.UNKNOWN and self.error is not None:
+            raise ValueError("only unknown IntentDecision may contain an error")
+        return self
+
+
 class InquiryAnswer(BaseModel):
     """The answer to an Inquiry, or stable error data when it cannot run."""
 

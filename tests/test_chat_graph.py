@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any, cast
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -9,10 +10,17 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from review_sheep import (
+    ChatIntent,
+    Finding,
     InquiryAnswer,
     InquiryChatState,
+    IntentDecision,
+    PullRequestSnapshot,
+    Review,
+    ReviewWorkspace,
     create_chatbot_graph,
     create_inquiry_agent,
+    create_review_agent,
 )
 
 
@@ -90,6 +98,29 @@ class FakePullRequestReader:
         raise AssertionError("not expected in this chat")
 
 
+class ScriptedIntentClassifier:
+    def __init__(self, *decisions: IntentDecision) -> None:
+        self.decisions = iter(decisions)
+
+    def classify(self, messages: Sequence[BaseMessage]) -> IntentDecision:
+        return next(self.decisions)
+
+
+class EmptySnapshotSource:
+    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
+        return PullRequestSnapshot(
+            repo=repo,
+            number=number,
+            head_sha="abc123",
+            files=[],
+        )
+
+
+class EmptyReviewRunner:
+    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
+        return []
+
+
 def test_chatbot_graph_routes_conversation_through_the_inquiry_agent() -> None:
     model = ScriptedInquiryModel(
         responses=[
@@ -128,7 +159,7 @@ def test_chatbot_graph_routes_conversation_through_the_inquiry_agent() -> None:
         chatbot.invoke(InquiryChatState(messages=[])),
     )
     assert state["messages"][-1].content == (
-        "What would you like to know about pull requests?"
+        "What would you like to know or review about pull requests?"
     )
 
     state["messages"] = [
@@ -182,7 +213,141 @@ def test_chatbot_graph_returns_inquiry_failures_as_structured_chat_state() -> No
     )
 
 
-def test_chatbot_graph_has_one_langgraph_bot_node() -> None:
+def test_chatbot_graph_routes_changed_code_intent_to_review_bot() -> None:
+    inquiry_agent = create_inquiry_agent(
+        model=ScriptedInquiryModel(responses=[]),
+        github=FakePullRequestReader(),
+    )
+    reviewer = create_review_agent(
+        source=EmptySnapshotSource(),
+        runner=EmptyReviewRunner(),
+    )
+    chatbot = create_chatbot_graph(
+        agent=inquiry_agent,
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(
+                intent=ChatIntent.REVIEW,
+                repo="acme/widgets",
+                pull_request_number=42,
+            )
+        ),
+        reviewer=reviewer,
+    )
+
+    result = chatbot.invoke(
+        {
+            "messages": [
+                HumanMessage(content="Review the changed code in acme/widgets#42.")
+            ]
+        }
+    )
+
+    assert result["intent"].intent is ChatIntent.REVIEW
+    assert isinstance(result["review"], Review)
+    assert (
+        result["messages"][-1].content
+        == """# Review Report: acme/widgets#42
+
+Head: `abc123`
+Findings: 0
+
+No Findings.
+"""
+    )
+
+
+def test_chatbot_graph_does_not_answer_an_unrelated_message() -> None:
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(responses=[]),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(intent=ChatIntent.UNRELATED)
+        ),
+    )
+
+    result = chatbot.invoke(
+        {"messages": [HumanMessage(content="What is the weather?")]}
+    )
+
+    assert result["intent"].intent is ChatIntent.UNRELATED
+    assert result["messages"][-1].content == (
+        "I can only help with pull-request metadata or changed-code reviews."
+    )
+    assert "answer" not in result
+    assert "review" not in result
+
+
+def test_chatbot_graph_routes_identity_questions_to_inquiry_agent() -> None:
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(
+                responses=[
+                    AIMessage(
+                        content=(
+                            "I am Review Sheep, an assistant for understanding and "
+                            "reviewing GitHub pull requests."
+                        )
+                    )
+                ]
+            ),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(IntentDecision(intent=ChatIntent.INQUIRY)),
+    )
+
+    result = chatbot.invoke({"messages": [HumanMessage(content="Who are you?")]})
+
+    assert result["intent"].intent is ChatIntent.INQUIRY
+    assert result["messages"][-1].content == (
+        "I am Review Sheep, an assistant for understanding and reviewing "
+        "GitHub pull requests."
+    )
+
+
+def test_review_route_collects_missing_context_across_turns() -> None:
+    reviewer = create_review_agent(
+        source=EmptySnapshotSource(),
+        runner=EmptyReviewRunner(),
+    )
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(responses=[]),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(intent=ChatIntent.REVIEW, repo="acme/widgets"),
+            IntentDecision(intent=ChatIntent.REVIEW, pull_request_number=42),
+        ),
+        reviewer=reviewer,
+    )
+
+    state = cast(
+        InquiryChatState,
+        chatbot.invoke(
+            {"messages": [HumanMessage(content="Review changed code in acme/widgets.")]}
+        ),
+    )
+    assert state["messages"][-1].content == (
+        "Which pull-request number should I review in acme/widgets?"
+    )
+
+    state["messages"] = [
+        *state["messages"],
+        HumanMessage(content="42"),
+    ]
+    state = cast(InquiryChatState, chatbot.invoke(state))
+
+    assert state["intent"] == IntentDecision(
+        intent=ChatIntent.REVIEW,
+        repo="acme/widgets",
+        pull_request_number=42,
+    )
+    assert isinstance(state["review"], Review)
+
+
+def test_chatbot_graph_routes_through_intent_classifier_node() -> None:
     agent = create_inquiry_agent(
         model=ScriptedInquiryModel(responses=[]),
         github=FakePullRequestReader(),
@@ -190,6 +355,11 @@ def test_chatbot_graph_has_one_langgraph_bot_node() -> None:
     chatbot = create_chatbot_graph(agent=agent)
 
     assert {(edge.source, edge.target) for edge in chatbot.get_graph().edges} == {
-        ("__start__", "Bot"),
+        ("__start__", "IntentClassifier"),
+        ("IntentClassifier", "Bot"),
+        ("IntentClassifier", "ReviewBot"),
+        ("IntentClassifier", "UnrelatedBot"),
         ("Bot", "__end__"),
+        ("ReviewBot", "__end__"),
+        ("UnrelatedBot", "__end__"),
     }

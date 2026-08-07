@@ -56,18 +56,30 @@ else:
 
 ## Simple Chatbot Graph
 
-Build a continuous LangGraph chatbot around the LangChain Inquiry agent. Each
-turn uses exactly one node and follows `START -> Bot -> END`; LangGraph keeps the
-conversation messages while the Inquiry agent selects read-only GitHub metadata
-tools and answers each question:
+Build a continuous LangGraph chatbot that classifies each turn and routes it to
+the LangChain Inquiry agent, changed-code Review agent, or an unrelated-message
+scope response:
+
+```text
+START -> IntentClassifier -> Bot | ReviewBot | UnrelatedBot -> END
+```
 
 ```python
 from langchain_core.messages import HumanMessage
 
-from review_sheep import InquiryChatState, create_chatbot_graph
+from review_sheep import (
+    ChatState,
+    create_chatbot_graph,
+    create_deep_review_agent,
+    create_intent_classifier,
+)
 
-chatbot = create_chatbot_graph(agent=inquiry_agent)
-state = InquiryChatState(messages=[])
+chatbot = create_chatbot_graph(
+    agent=inquiry_agent,
+    classifier=create_intent_classifier(model=model),
+    reviewer=create_deep_review_agent(source=github, model=model),
+)
+state = ChatState(messages=[])
 state = chatbot.invoke(state)
 print(state["messages"][-1].content)
 
@@ -79,9 +91,10 @@ state["messages"] = [
 state = chatbot.invoke(state)
 ```
 
-The `Bot` node sends the accumulated conversation to `InquiryAgent`. Completed
-graph output keeps the structured `InquiryAnswer` in `state["answer"]` and
-appends its text as the final AI message.
+`IntentClassifier` returns a Pydantic routing decision. `Bot` keeps the
+structured `InquiryAnswer` in `state["answer"]`; `ReviewBot` keeps the
+structured `Review` or `ReviewError` in `state["review"]`. `UnrelatedBot` does
+not invoke either agent and returns only the chatbot's supported scope.
 
 ## Review and Report
 
@@ -114,7 +127,7 @@ else:
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
 
-## Try live Inquiry prompts in a loop
+## Try the intent-routed chatbot
 
 Install the project with the provider extra you want to test. For OpenAI:
 
@@ -136,20 +149,23 @@ OPENAI_API_KEY=your-openai-api-key
 uv run python scripts/review_chat.py
 ```
 
-Ask metadata questions naturally. The Inquiry agent can list pull requests, read
-one pull request, and inspect its review state. Type `exit` or `quit` to stop.
+Ask what Review Sheep can do, ask metadata questions, or request a changed-code
+Review naturally. The classifier selects the correct agent path; ReviewBot asks
+for a repository or pull-request number when the request omitted it. Type `exit`
+or `quit` to stop.
 
 ```text
-Inquiry chatbot ready; type exit or quit to stop.
-Bot: What would you like to know about pull requests?
+Review Sheep chatbot ready; type exit or quit to stop.
+Bot: What would you like to know or review about pull requests?
 You: Which pull requests are open in other/project?
 Bot: Open pull requests: #123 ...
 You: What is the review state of #123?
 Bot: Pull request #123 ...
+You: Review changed code in other/project#123 for correctness
+Bot: # Review Report: other/project#123
 You: quit
 ```
 
 The GitHub token must be able to read the target repository; private
-repositories require corresponding read access. Inquiry is metadata-only and
-never posts reviews, comments, or Findings to GitHub. Changed-code Review is
-available separately through `create_deep_review_agent`.
+repositories require corresponding read access. Both routes are read-only and
+never post reviews, comments, or Findings to GitHub.

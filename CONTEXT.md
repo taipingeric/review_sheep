@@ -58,3 +58,10 @@ _Avoid_: index, listing, file list, inventory
 A question about pull requests answered from GitHub metadata alone, producing no
 Findings. Distinct from a Review, which examines changed code.
 _Avoid_: chat, query, quick mode, ask
+
+**Intent**:
+The route selected for one chatbot turn: `inquiry` for metadata and Review Sheep
+identity questions, or `review` for changed-code inspection. `unrelated` is
+outside both supported paths and receives no substantive answer; `unknown`
+represents only a contained classifier failure.
+_Avoid_: mode, command, action type

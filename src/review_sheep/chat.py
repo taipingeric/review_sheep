@@ -1,4 +1,4 @@
-"""Continuous CLI conversation with the LangGraph Inquiry chatbot."""
+"""Continuous CLI conversation with the intent-routed LangGraph chatbot."""
 
 from __future__ import annotations
 
@@ -13,9 +13,11 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from pydantic import SecretStr
 
-from review_sheep.chat_graph import InquiryChatState, create_chatbot_graph
+from review_sheep.chat_graph import ChatState, create_chatbot_graph
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import create_inquiry_agent
+from review_sheep.intent import create_intent_classifier
+from review_sheep.review import create_deep_review_agent
 
 
 class ModelFactory(Protocol):
@@ -60,7 +62,7 @@ def main(
     github_factory: Callable[[str], Any] = _github_client,
     model_factory: ModelFactory = _openai_model,
 ) -> int:
-    """Read .env and continuously answer Inquiry questions."""
+    """Read .env and continuously route Inquiry and Review requests."""
     output = output or sys.stdout
     error = error or sys.stderr
     load_dotenv(dotenv_path=".env")
@@ -96,13 +98,19 @@ def main(
             return 2
 
         inquiry_agent = create_inquiry_agent(model=model, github=github)
-        chatbot = create_chatbot_graph(agent=inquiry_agent)
+        intent_classifier = create_intent_classifier(model=model)
+        review_agent = create_deep_review_agent(source=github, model=model)
+        chatbot = create_chatbot_graph(
+            agent=inquiry_agent,
+            classifier=intent_classifier,
+            reviewer=review_agent,
+        )
         conversation = cast(
-            InquiryChatState,
-            chatbot.invoke(InquiryChatState(messages=[])),
+            ChatState,
+            chatbot.invoke(ChatState(messages=[])),
         )
         print(
-            "Inquiry chatbot ready; type exit or quit to stop.",
+            "Review Sheep chatbot ready; type exit or quit to stop.",
             file=output,
         )
         print(f"Bot: {conversation['messages'][-1].content}", file=output)
@@ -123,7 +131,7 @@ def main(
                     HumanMessage(content=user_message),
                 ]
                 conversation = cast(
-                    InquiryChatState,
+                    ChatState,
                     chatbot.invoke(conversation),
                 )
                 print(

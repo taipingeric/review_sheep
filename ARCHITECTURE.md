@@ -25,7 +25,7 @@ The project exposes two capabilities with different cost and data access:
 ```mermaid
 flowchart LR
     Caller[Library caller or CLI]
-    Chat[LangGraph chatbot<br/>START → Bot → END]
+    Chat[LangGraph chatbot<br/>IntentClassifier route]
     Inquiry[LangChain Inquiry agent]
     Tools[LangChain GitHub tools]
     GitHub[GitHub adapter<br/>PyGithub]
@@ -37,6 +37,7 @@ flowchart LR
 
     Caller --> Chat
     Chat --> Inquiry
+    Chat --> Review
     Inquiry --> Tools
     Tools --> GitHub
 
@@ -49,9 +50,10 @@ flowchart LR
     Models --> Report
 ```
 
-The two paths share the GitHub adapter and model abstractions, but they do not
-share an agent prompt or execution graph. Metadata questions should not pay the
-cost of fetching diffs, and code Review must not rely on metadata-only tools.
+The two paths share the outer routing graph, GitHub adapter, and model
+abstractions, but they do not share an agent prompt or worker graph. Metadata
+questions should not pay the cost of fetching diffs, and code Review must not
+rely on metadata-only tools.
 
 ## Framework responsibilities
 
@@ -71,20 +73,34 @@ name or a `BaseChatModel`; only the CLI constructs `ChatOpenAI`.
 
 ### LangGraph: orchestration and state
 
-The conversational interface is a compiled `StateGraph`:
+The conversational interface is a compiled `StateGraph` with an explicit
+intent route:
 
 ```text
-START -> Bot -> END
+START -> IntentClassifier
+            |-- inquiry --> Bot ------> END
+            |-- review  --> ReviewBot -> END
+            +-- unrelated --> UnrelatedBot -> END
 ```
 
-`InquiryChatState` extends `MessagesState` and adds the latest structured
-`InquiryAnswer`. Each graph invocation is one turn. Conversation history is
-passed back into the next invocation by the caller or CLI; the graph currently
-has no checkpointer or persistent store.
+`ChatState` extends `MessagesState` and adds the latest Pydantic
+`IntentDecision`, structured `InquiryAnswer`, or structured `Review`. The
+legacy `InquiryChatState` name remains as a compatible state type. Each graph
+invocation is one turn. Conversation history is passed back into the next
+invocation by the caller or CLI; the graph currently has no checkpointer or
+persistent store.
 
-The `Bot` node is intentionally deep: callers only supply an `InquiryAgent` and
-messages, while the node handles the empty-state greeting, agent invocation,
-error presentation, message accumulation, and structured answer retention.
+`IntentClassifier` is a LangChain agent with a Pydantic structured-output
+contract. Metadata, greeting, and Review Sheep identity requests route to `Bot`,
+while changed-code requests route to `ReviewBot`. Messages outside both
+supported capabilities route to
+`UnrelatedBot`, which invokes neither agent. The Review route retains an
+explicitly extracted `owner/repo` and pull-request number across turns, asking
+for whichever value is still missing.
+
+The graph interface remains deep: callers supply the agents and messages, while
+the graph handles classification, conditional routing, context collection,
+error presentation, message accumulation, and structured result retention.
 
 The Review Lenses are created with `deepagents.create_deep_agent`. Each worker
 is a LangGraph agent with a `StateBackend`, filesystem tools, a Lens-specific
@@ -107,7 +123,8 @@ after a failed stage.
 
 | Module | Public interface | Responsibility |
 | --- | --- | --- |
-| `chat_graph.py` | `create_chatbot_graph`, `InquiryChatState` | Compile the conversational LangGraph and retain message state plus the latest Inquiry answer. |
+| `chat_graph.py` | `create_chatbot_graph`, `ChatState` | Classify each turn and route it to the Inquiry, Review, or unrelated Bot while retaining structured state. |
+| `intent.py` | `create_intent_classifier`, `IntentClassifier` | Build the LangChain structured-output agent that chooses the graph route. |
 | `inquiry.py` | `create_inquiry_agent`, `InquiryAgent.ask`, `InquiryAgent.invoke` | Build and run the metadata-only LangChain agent. |
 | `review.py` | `create_deep_review_agent`, `ReviewAgent.review` | Compile and run the Review LangGraph, including snapshot preparation and every Lens. |
 | `github.py` | `GitHubPullRequestReader` | Adapt PyGithub to both metadata reads and stable changed-code snapshots. |
@@ -123,12 +140,14 @@ requests are waiting for review?” or “who approved PR 42?”.
 ```mermaid
 sequenceDiagram
     participant User
-    participant Graph as LangGraph Bot
+    participant Router as IntentClassifier
+    participant Graph as Inquiry Bot
     participant Agent as LangChain Inquiry agent
     participant Tool as GitHub tool
     participant GitHub as GitHubPullRequestReader
 
-    User->>Graph: conversation messages
+    User->>Router: conversation messages
+    Router-->>Graph: inquiry IntentDecision
     Graph->>Agent: InquiryAgent.invoke(messages)
     Agent->>Tool: choose metadata operation
     Tool->>GitHub: read repository / PR / reviews
@@ -149,9 +168,10 @@ without crashing the graph. `InquiryAgent` converts invocation failures or an
 empty model response into `InquiryAnswer(error=...)`. If a list tool reports
 `truncated=true`, the structured answer records `incomplete=True`.
 
-The system prompt requires the agent to use returned metadata only, include PR
-numbers and URLs, disclose truncation, avoid inventing changed-code Findings,
-and answer in the user's language.
+The system prompt identifies the agent as Review Sheep and lets it introduce its
+read-only Inquiry and Review capabilities without calling tools. For metadata it
+must use returned data only, include PR numbers and URLs, disclose truncation,
+avoid inventing changed-code Findings, and answer in the user's language.
 
 ## Review path
 
@@ -228,6 +248,7 @@ The production and deterministic test adapters cross the same interfaces:
 | `PullRequestReader` | `GitHubPullRequestReader` over PyGithub | In-memory metadata readers |
 | `SnapshotSource` | `GitHubPullRequestReader` over PyGithub | Deterministic or failing snapshot sources |
 | `ReviewRunner` | `DeepAgentReviewRunner` | Deterministic Review runners |
+| `IntentClassifier` | LangChain structured-output agent | Scripted classifiers |
 | LangChain model | Provider `BaseChatModel`, such as `ChatOpenAI` | Deterministic chat models |
 
 Dependencies are accepted by factories instead of created inside domain
@@ -238,6 +259,9 @@ the seams without exposing their implementation details to callers.
 
 Errors are data at the public interfaces:
 
+- Intent classification returns `IntentDecision(intent="unknown", error=...)`.
+- An unrelated request returns `IntentDecision(intent="unrelated")` and invokes
+  neither Inquiry nor Review.
 - Inquiry returns `InquiryAnswer(error=...)`.
 - Review returns `ReviewError` with `fetch_snapshot`, `prepare_workspace`, or
   `run_review` as the failed operation.
@@ -260,6 +284,8 @@ constructs this object graph:
   -> GitHubPullRequestReader
   -> ChatOpenAI
   -> create_inquiry_agent
+  -> create_intent_classifier
+  -> create_deep_review_agent
   -> create_chatbot_graph
   -> continuous terminal loop
 ```
@@ -271,8 +297,8 @@ Required environment variables are `GITHUB_TOKEN`, `OPENAI_MODEL`, and
 
 Tests exercise the same module interfaces used by production callers:
 
-- graph tests assert `START -> Bot -> END`, accumulated messages, and structured
-  state;
+- graph tests assert the classifier's conditional Inquiry and Review routes,
+  accumulated messages, and structured state;
 - Inquiry tests use deterministic models and fake GitHub readers to verify tool
   selection, truncation, conversation, and failures;
 - Review tests inject snapshots, runners, and deterministic deep-agent models
@@ -289,14 +315,15 @@ Current constraints:
 - Python 3.11 or newer;
 - read-only GitHub access;
 - in-memory conversation state;
-- one chatbot node per Inquiry turn and three Review workflow nodes;
+- one classifier plus Inquiry, Review, and unrelated Bot nodes, and three Review
+  workflow nodes;
 - Review Lenses run sequentially;
 - no Finding merge or verification pass.
 
-Natural extension points are adding a LangGraph checkpointer, adding graph nodes
-for explicit routing between Inquiry and Review, introducing another Lens, or
-building a separate publishing adapter. These additions should preserve the
-Pydantic contracts and the read-only core.
+Natural extension points are adding a LangGraph checkpointer, adding another
+intent route, introducing another Lens, or building a separate publishing
+adapter. These additions should preserve the Pydantic contracts and the
+read-only core.
 
 Historical decisions and their tradeoffs are recorded in [`docs/adr`](docs/adr).
 Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
