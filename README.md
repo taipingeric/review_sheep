@@ -85,10 +85,11 @@ appends its text as the final AI message.
 
 ## Review and Report
 
-Review reads changed-file metadata and diffs once. Correctness, security, and
-conventions-and-tests subagents inspect the same in-memory Manifest and diff
-snapshot. Findings retain their Location, Severity, Confidence, and originating
-Lens; overlapping Findings are not merged.
+Review runs a LangGraph workflow that reads changed-file metadata and diffs
+once, prepares a shared workspace, and invokes the Lens agents. Correctness,
+security, and conventions-and-tests deep agents inspect the same in-memory
+Manifest and diff snapshot. Findings retain their Location, Severity,
+Confidence, and originating Lens; overlapping Findings are not merged.
 
 ```python
 from review_sheep import (

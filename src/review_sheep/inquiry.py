@@ -10,7 +10,8 @@ from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
-from pydantic import BaseModel, ConfigDict, model_validator
+
+from review_sheep.domain import InquiryAnswer
 
 SYSTEM_PROMPT = (
     "You answer questions about GitHub pull requests using only the metadata "
@@ -32,23 +33,6 @@ class PullRequestReader(Protocol):
     def get_pull_request(self, *, number: int, repo: str) -> dict[str, Any]: ...
 
     def get_pull_request_reviews(self, *, number: int, repo: str) -> dict[str, Any]: ...
-
-
-class InquiryAnswer(BaseModel):
-    """The answer to an Inquiry, or stable error data when it cannot run."""
-
-    model_config = ConfigDict(frozen=True)
-
-    text: str | None = None
-    error: str | None = None
-    incomplete: bool = False
-
-    @model_validator(mode="after")
-    def require_text_or_error(self) -> InquiryAnswer:
-        """Require exactly one successful answer or failure description."""
-        if (self.text is None) == (self.error is None):
-            raise ValueError("InquiryAnswer requires exactly one of text or error")
-        return self
 
 
 class InquiryAgent:

@@ -7,6 +7,7 @@ from review_sheep.chat_graph import (
 from review_sheep.domain import (
     Confidence,
     Finding,
+    InquiryAnswer,
     Lens,
     Location,
     Manifest,
@@ -23,7 +24,6 @@ from review_sheep.domain import (
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import (
     InquiryAgent,
-    InquiryAnswer,
     PullRequestReader,
     create_inquiry_agent,
 )

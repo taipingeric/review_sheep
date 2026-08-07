@@ -40,6 +40,23 @@ class ReviewOperation(str, Enum):
     RUN_REVIEW = "run_review"
 
 
+class InquiryAnswer(BaseModel):
+    """The answer to an Inquiry, or stable error data when it cannot run."""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str | None = None
+    error: str | None = None
+    incomplete: bool = False
+
+    @model_validator(mode="after")
+    def require_text_or_error(self) -> InquiryAnswer:
+        """Require exactly one successful answer or failure description."""
+        if (self.text is None) == (self.error is None):
+            raise ValueError("InquiryAnswer requires exactly one of text or error")
+        return self
+
+
 class Location(BaseModel):
     """Where a Finding applies: whole snapshot, one file, or one line range."""
 

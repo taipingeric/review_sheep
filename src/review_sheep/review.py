@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from deepagents import create_deep_agent as _create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.backends.utils import create_file_data
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
+from langgraph.graph import END, START, StateGraph
+from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict
 
 from review_sheep.domain import (
@@ -39,6 +41,16 @@ class ReviewRunner(Protocol):
     """Review one prepared workspace through every configured Lens."""
 
     def run(self, workspace: ReviewWorkspace) -> list[Finding]: ...
+
+
+class _ReviewGraphState(TypedDict):
+    """Internal state for the deterministic Review LangGraph."""
+
+    repo: str
+    pull_request_number: int
+    snapshot: NotRequired[PullRequestSnapshot]
+    workspace: NotRequired[ReviewWorkspace]
+    result: NotRequired[Review | ReviewError]
 
 
 class CorrectnessFinding(Finding):
@@ -81,6 +93,37 @@ class ConventionsAndTestsResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     findings: list[ConventionsAndTestsFinding]
+
+
+_LENS_RESULT_SCHEMAS: dict[Lens, type[BaseModel]] = {
+    Lens.CORRECTNESS: CorrectnessResult,
+    Lens.SECURITY: SecurityResult,
+    Lens.CONVENTIONS_AND_TESTS: ConventionsAndTestsResult,
+}
+
+_LENS_SYSTEM_PROMPTS = {
+    Lens.CORRECTNESS: (
+        "Plan the Review, then inspect the whole pull request through the "
+        "correctness Lens, not one file in isolation. Start with /manifest.json, "
+        "inspect every relevant diff under /diffs, trace changed contracts across "
+        "callers and callees, and report only actionable defects. Every output "
+        "item must use the correctness lens."
+    ),
+    Lens.SECURITY: (
+        "Plan the Review, then inspect the whole pull request through the security "
+        "Lens. Start with /manifest.json, inspect every relevant diff under /diffs, "
+        "and trace data, identity, authorization, and trust boundaries across files. "
+        "Report only actionable security defects. Every output item must use the "
+        "security lens."
+    ),
+    Lens.CONVENTIONS_AND_TESTS: (
+        "Plan the Review, then inspect the whole pull request through the "
+        "conventions-and-tests Lens. Start with /manifest.json, inspect every "
+        "relevant diff under /diffs, and compare related implementation and tests "
+        "across files. Report only actionable convention or test defects. Every "
+        "output item must use the conventions-and-tests lens."
+    ),
+}
 
 
 class DeepAgentReviewRunner:
@@ -143,58 +186,112 @@ def _validate_lens_findings(lens: Lens, payload: Any) -> list[Finding]:
 
 
 class ReviewAgent:
-    """Turn one pull-request snapshot into a structured Review."""
+    """Run the Review LangGraph behind one stable public interface."""
 
     def __init__(self, *, source: SnapshotSource, runner: ReviewRunner) -> None:
-        self._source = source
-        self._runner = runner
+        self._graph = _create_review_graph(source=source, runner=runner)
 
     def review(self, *, repo: str, number: int) -> Review | ReviewError:
         """Run one structured Review without writing to GitHub."""
-        try:
-            snapshot = self._source.fetch_snapshot(repo=repo, number=number)
-        except Exception as error:  # noqa: BLE001 - failures are public data here
-            return _review_error(
-                repo=repo,
-                number=number,
-                operation=ReviewOperation.FETCH_SNAPSHOT,
-                error=error,
-            )
-
-        try:
-            workspace = _build_workspace(snapshot)
-        except Exception as error:  # noqa: BLE001 - failures are public data here
-            return _review_error(
-                repo=repo,
-                number=number,
-                operation=ReviewOperation.PREPARE_WORKSPACE,
-                error=error,
-            )
-
-        try:
-            findings = self._runner.run(workspace)
-        except Exception as error:  # noqa: BLE001 - failures are public data here
-            return _review_error(
-                repo=repo,
-                number=number,
-                operation=ReviewOperation.RUN_REVIEW,
-                error=error,
-            )
-        return Review(
-            repo=snapshot.repo,
-            pull_request_number=snapshot.number,
-            head_sha=snapshot.head_sha,
-            manifest=workspace.manifest,
-            findings=findings,
+        state = cast(
+            _ReviewGraphState,
+            self._graph.invoke(
+                _ReviewGraphState(repo=repo, pull_request_number=number)
+            ),
         )
+        return state["result"]
+
+
+def _create_review_graph(
+    *, source: SnapshotSource, runner: ReviewRunner
+) -> CompiledStateGraph[
+    _ReviewGraphState,
+    None,
+    _ReviewGraphState,
+    _ReviewGraphState,
+]:
+    """Compile snapshot, workspace, and Lens execution into one LangGraph."""
+
+    def fetch_snapshot(state: _ReviewGraphState) -> dict[str, object]:
+        try:
+            snapshot = source.fetch_snapshot(
+                repo=state["repo"],
+                number=state["pull_request_number"],
+            )
+        except Exception as error:  # noqa: BLE001 - failures are public data here
+            return {
+                "result": _review_error(
+                    state=state,
+                    operation=ReviewOperation.FETCH_SNAPSHOT,
+                    error=error,
+                )
+            }
+        return {"snapshot": snapshot}
+
+    def prepare_workspace(state: _ReviewGraphState) -> dict[str, object]:
+        try:
+            workspace = _build_workspace(state["snapshot"])
+        except Exception as error:  # noqa: BLE001 - failures are public data here
+            return {
+                "result": _review_error(
+                    state=state,
+                    operation=ReviewOperation.PREPARE_WORKSPACE,
+                    error=error,
+                )
+            }
+        return {"workspace": workspace}
+
+    def run_review(state: _ReviewGraphState) -> dict[str, object]:
+        try:
+            findings = runner.run(state["workspace"])
+        except Exception as error:  # noqa: BLE001 - failures are public data here
+            return {
+                "result": _review_error(
+                    state=state,
+                    operation=ReviewOperation.RUN_REVIEW,
+                    error=error,
+                )
+            }
+        snapshot = state["snapshot"]
+        workspace = state["workspace"]
+        return {
+            "result": Review(
+                repo=snapshot.repo,
+                pull_request_number=snapshot.number,
+                head_sha=snapshot.head_sha,
+                manifest=workspace.manifest,
+                findings=findings,
+            )
+        }
+
+    def route(state: _ReviewGraphState) -> Literal["continue", "stop"]:
+        return "stop" if "result" in state else "continue"
+
+    graph = StateGraph(_ReviewGraphState)
+    graph.add_node("fetch_snapshot", fetch_snapshot)
+    graph.add_node("prepare_workspace", prepare_workspace)
+    graph.add_node("run_review", run_review)
+    graph.add_edge(START, "fetch_snapshot")
+    graph.add_conditional_edges(
+        "fetch_snapshot",
+        route,
+        {"continue": "prepare_workspace", "stop": END},
+    )
+    graph.add_conditional_edges(
+        "prepare_workspace",
+        route,
+        {"continue": "run_review", "stop": END},
+    )
+    graph.add_edge("run_review", END)
+    return graph.compile()
 
 
 def _review_error(
-    *, repo: str, number: int, operation: ReviewOperation, error: Exception
+    *, state: _ReviewGraphState, operation: ReviewOperation, error: Exception
 ) -> ReviewError:
     return ReviewError(
-        repo=repo,
-        pull_request_number=number,
+        repo=state["repo"],
+        pull_request_number=state["pull_request_number"],
         operation=operation,
         error_type=type(error).__name__,
         message=str(error),
@@ -244,53 +341,19 @@ def create_deep_review_agent(
     instructions: str = "",
 ) -> ReviewAgent:
     """Create the production Review workflow with one subagent per Lens."""
-    correctness_subagent = _create_deep_agent(
-        model=model,
-        backend=StateBackend(),
-        response_format=ToolStrategy(CorrectnessResult),
-        system_prompt=(
-            _SERIAL_TOOL_USE_PROMPT
-            + "Plan the Review, then inspect the whole pull request through the "
-            "correctness Lens, not one file in isolation. Start with /manifest.json, "
-            "inspect every relevant diff under /diffs, trace changed contracts across "
-            "callers and callees, and report only actionable defects. Every output "
-            "item must use the correctness lens."
-        ),
-    )
-    security_subagent = _create_deep_agent(
-        model=model,
-        backend=StateBackend(),
-        response_format=ToolStrategy(SecurityResult),
-        system_prompt=(
-            _SERIAL_TOOL_USE_PROMPT
-            + "Plan the Review, then inspect the whole pull request through the security "
-            "Lens. Start with /manifest.json, inspect every relevant diff under /diffs, "
-            "and trace data, identity, authorization, and trust boundaries across files. "
-            "Report only actionable security defects. Every output item must use the "
-            "security lens."
-        ),
-    )
-    conventions_and_tests_subagent = _create_deep_agent(
-        model=model,
-        backend=StateBackend(),
-        response_format=ToolStrategy(ConventionsAndTestsResult),
-        system_prompt=(
-            _SERIAL_TOOL_USE_PROMPT
-            + "Plan the Review, then inspect the whole pull request through the "
-            "conventions-and-tests Lens. Start with /manifest.json, inspect every "
-            "relevant diff under /diffs, and compare related implementation and tests "
-            "across files. Report only actionable convention or test defects. Every "
-            "output item must use the conventions-and-tests lens."
-        ),
-    )
+    subagents = {
+        lens: _create_deep_agent(
+            model=model,
+            backend=StateBackend(),
+            response_format=ToolStrategy(_LENS_RESULT_SCHEMAS[lens]),
+            system_prompt=_SERIAL_TOOL_USE_PROMPT + _LENS_SYSTEM_PROMPTS[lens],
+        )
+        for lens in Lens
+    }
     return create_review_agent(
         source=source,
         runner=DeepAgentReviewRunner(
-            subagents={
-                Lens.CORRECTNESS: correctness_subagent,
-                Lens.SECURITY: security_subagent,
-                Lens.CONVENTIONS_AND_TESTS: conventions_and_tests_subagent,
-            },
+            subagents=subagents,
             instructions=instructions,
         ),
     )

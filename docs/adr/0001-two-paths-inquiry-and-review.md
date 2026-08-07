@@ -6,7 +6,9 @@ on a plain tool-calling agent over read-only GitHub metadata, and a Review path
 on a deep agent with planning, a filesystem for diffs, and review subagents.
 `InquiryAgent` and the deep Review agents are LangChain agents. The conversational
 entrypoint is a LangGraph whose Bot node delegates accumulated messages to
-`InquiryAgent`; the graph does not implement GitHub or Review orchestration itself.
+`InquiryAgent`. Review uses a separate LangGraph for snapshot fetching, workspace
+preparation, and Lens execution; `ReviewAgent.review` hides that graph behind a
+single structured interface.
 
 ## Consequences
 

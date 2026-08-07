@@ -130,9 +130,9 @@ def main(
                     f"Bot: {conversation['messages'][-1].content}",
                     file=output,
                 )
-            except Exception as review_error:  # noqa: BLE001 - keep the loop alive
+            except Exception as inquiry_error:  # noqa: BLE001 - keep the loop alive
                 print(
-                    f"error: {type(review_error).__name__}: {review_error}",
+                    f"error: {type(inquiry_error).__name__}: {inquiry_error}",
                     file=error,
                 )
         return 0

@@ -1,4 +1,4 @@
-"""Read-only GitHub adapter for Inquiry."""
+"""Read-only GitHub adapter shared by Inquiry and Review."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from review_sheep.domain import PullRequestSnapshot, SnapshotFile
 
 
 class GitHubPullRequestReader:
-    """Adapt a PyGithub client to the Inquiry metadata interface."""
+    """Adapt PyGithub to metadata reads and stable Review snapshots."""
 
     def __init__(self, *, client: Any, default_repo: str = "") -> None:
         self._client = client

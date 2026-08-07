@@ -8,7 +8,8 @@ from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
-from review_sheep.inquiry import InquiryAgent, InquiryAnswer
+from review_sheep.domain import InquiryAnswer
+from review_sheep.inquiry import InquiryAgent
 
 
 class InquiryChatState(MessagesState):

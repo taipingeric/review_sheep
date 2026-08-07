@@ -6,8 +6,9 @@ frameworks:
 
 - **LangChain agents** provide model invocation, tool calling, messages, and
   structured output.
-- **LangGraph** provides stateful conversation orchestration. The `deepagents`
-  Review workers are also LangGraph agents built on LangChain primitives.
+- **LangGraph** provides stateful conversation and Review workflow
+  orchestration. The `deepagents` Review workers are also LangGraph agents
+  built on LangChain primitives.
 
 Pydantic domain models, the GitHub adapter, and Report rendering remain outside
 the agent runtime. They form stable seams around nondeterministic model
@@ -28,7 +29,7 @@ flowchart LR
     Inquiry[LangChain Inquiry agent]
     Tools[LangChain GitHub tools]
     GitHub[GitHub adapter<br/>PyGithub]
-    Review[Review module]
+    Review[Review LangGraph<br/>fetch → prepare → run]
     Workspace[Manifest + virtual diff files]
     Lenses[Three deepagents<br/>LangGraph agents]
     Models[Pydantic domain models]
@@ -89,13 +90,26 @@ The Review Lenses are created with `deepagents.create_deep_agent`. Each worker
 is a LangGraph agent with a `StateBackend`, filesystem tools, a Lens-specific
 system prompt, and a LangChain `ToolStrategy` output contract.
 
+Review itself is a separate compiled `StateGraph` hidden behind
+`ReviewAgent.review`:
+
+```text
+START -> fetch_snapshot -> prepare_workspace -> run_review -> END
+             |                    |
+             +------ error -------+--------------------------> END
+```
+
+Each node owns one failure operation and writes either the next validated state
+value or a final `ReviewError`. Conditional edges stop the workflow immediately
+after a failed stage.
+
 ## Module map
 
 | Module | Public interface | Responsibility |
 | --- | --- | --- |
 | `chat_graph.py` | `create_chatbot_graph`, `InquiryChatState` | Compile the conversational LangGraph and retain message state plus the latest Inquiry answer. |
 | `inquiry.py` | `create_inquiry_agent`, `InquiryAgent.ask`, `InquiryAgent.invoke` | Build and run the metadata-only LangChain agent. |
-| `review.py` | `create_deep_review_agent`, `ReviewAgent.review` | Fetch one snapshot, prepare one workspace, run every Lens, and return `Review` or `ReviewError`. |
+| `review.py` | `create_deep_review_agent`, `ReviewAgent.review` | Compile and run the Review LangGraph, including snapshot preparation and every Lens. |
 | `github.py` | `GitHubPullRequestReader` | Adapt PyGithub to both metadata reads and stable changed-code snapshots. |
 | `domain.py` | Frozen Pydantic models | Define the data contracts for snapshots, manifests, Findings, Reviews, and failures. |
 | `report.py` | `render_report` | Render a human-facing Report from a structured Review without changing it. |
@@ -141,18 +155,18 @@ and answer in the user's language.
 
 ## Review path
 
-Review is a deterministic pipeline around nondeterministic Lens agents:
+Review is a deterministic LangGraph around nondeterministic Lens agents:
 
 ```text
 ReviewAgent.review(repo, number)
-  -> SnapshotSource.fetch_snapshot
-  -> build Manifest and virtual diff filesystem
-  -> DeepAgentReviewRunner.run
-       -> correctness deep agent
-       -> security deep agent
-       -> conventions-and-tests deep agent
-  -> validate Pydantic structured outputs
-  -> Review | ReviewError
+  -> Review StateGraph
+       -> fetch_snapshot node
+       -> prepare_workspace node
+       -> run_review node
+            -> correctness deep agent
+            -> security deep agent
+            -> conventions-and-tests deep agent
+       -> Review | ReviewError
 ```
 
 ### Stable snapshot
@@ -261,7 +275,8 @@ Tests exercise the same module interfaces used by production callers:
   state;
 - Inquiry tests use deterministic models and fake GitHub readers to verify tool
   selection, truncation, conversation, and failures;
-- Review tests inject snapshots, runners, and deterministic deep-agent models;
+- Review tests inject snapshots, runners, and deterministic deep-agent models
+  through the same interface while the internal LangGraph remains unchanged;
 - GitHub adapter tests verify metadata mapping and head-change detection;
 - distribution smoke tests install the built wheel and exercise public imports.
 
@@ -274,7 +289,7 @@ Current constraints:
 - Python 3.11 or newer;
 - read-only GitHub access;
 - in-memory conversation state;
-- one chatbot node per turn;
+- one chatbot node per Inquiry turn and three Review workflow nodes;
 - Review Lenses run sequentially;
 - no Finding merge or verification pass.
 
