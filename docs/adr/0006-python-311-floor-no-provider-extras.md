@@ -6,7 +6,7 @@ dependency drops our Python 3.10 support and makes those two optional extras
 dishonest — installing the core already installs them. They are removed, along
 with the `all` extra that referenced them; only `openai` remains an extra,
 because `langchain-openai` is genuinely not pulled in by `deepagents` and
-`models.py` needs it.
+the optional `review_sheep.chat` adapter needs it.
 
 ## Consequences
 
