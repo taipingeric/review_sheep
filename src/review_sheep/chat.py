@@ -71,29 +71,50 @@ def main(
         token = _required_env("GITHUB_TOKEN")
         model_name = _required_env("OPENAI_MODEL")
         api_key = _required_env("OPENAI_API_KEY")
-        model = model_factory(
-            model=model_name,
-            api_key=api_key,
-            base_url=os.getenv("BASE_URL") or None,
-        )
+        base_url = os.getenv("BASE_URL", "").strip() or None
         default_repo = os.getenv("GITHUB_REPO", "").strip()
         repo = input_fn(f"Repository [{default_repo}]: ").strip() or default_repo
         if not repo:
             raise RuntimeError("repository is required")
         number_text = input_fn("Open PR number: ").strip()
-        number = int(number_text)
+        try:
+            number = int(number_text)
+        except ValueError as parse_error:
+            raise ValueError(
+                "pull-request number must be an integer"
+            ) from parse_error
         if number < 1:
             raise ValueError("pull-request number must be positive")
+    except EOFError:
+        return 0
     except (RuntimeError, ValueError) as config_error:
         print(f"error: {config_error}", file=error)
         return 2
 
-    client = github_factory(token)
+    try:
+        client = github_factory(token)
+    except Exception as github_error:  # noqa: BLE001 - concise CLI boundary
+        print(
+            f"error: {type(github_error).__name__}: {github_error}",
+            file=error,
+        )
+        return 1
+
     try:
         github = GitHubPullRequestReader(client=client)
         details = github.get_pull_request(repo=repo, number=number)
         if details["state"] != "open":
             print(f"error: {repo}#{number} is not open", file=error)
+            return 2
+
+        try:
+            model = model_factory(
+                model=model_name,
+                api_key=api_key,
+                base_url=base_url,
+            )
+        except (RuntimeError, ValueError) as config_error:
+            print(f"error: {config_error}", file=error)
             return 2
 
         print(
