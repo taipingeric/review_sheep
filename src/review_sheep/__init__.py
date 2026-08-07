@@ -1,5 +1,10 @@
 """Review Sheep — build agents that review GitHub pull requests."""
 
+from review_sheep.chat_graph import (
+    ReviewChatSource,
+    ReviewChatState,
+    create_chatbot_graph,
+)
 from review_sheep.domain import (
     Confidence,
     Finding,
@@ -51,6 +56,8 @@ __all__ = [
     "Report",
     "Review",
     "ReviewAgent",
+    "ReviewChatSource",
+    "ReviewChatState",
     "ReviewError",
     "ReviewOperation",
     "ReviewRunner",
@@ -58,6 +65,7 @@ __all__ = [
     "Severity",
     "SnapshotFile",
     "SnapshotSource",
+    "create_chatbot_graph",
     "create_deep_review_agent",
     "create_inquiry",
     "create_review_agent",

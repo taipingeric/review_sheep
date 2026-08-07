@@ -1,21 +1,20 @@
-"""Interactive while-loop for repeatedly reviewing one live pull request."""
+"""Continuous CLI conversation with the LangGraph Review chatbot."""
 
 from __future__ import annotations
 
 import os
 import sys
 from collections.abc import Callable
-from typing import Any, Protocol, TextIO
+from typing import Any, Protocol, TextIO, cast
 
 from dotenv import load_dotenv
 from github import Auth, Github
 from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import HumanMessage
 from pydantic import SecretStr
 
-from review_sheep.domain import Review
+from review_sheep.chat_graph import ReviewChatState, create_chatbot_graph
 from review_sheep.github import GitHubPullRequestReader
-from review_sheep.report import render_report
-from review_sheep.review import create_deep_review_agent
 
 
 class ModelFactory(Protocol):
@@ -62,7 +61,7 @@ def main(
     github_factory: Callable[[str], Any] = _github_client,
     model_factory: ModelFactory = _openai_model,
 ) -> int:
-    """Read .env and repeatedly Review one selected open pull request."""
+    """Read .env and continuously chat while the Bot gathers Review context."""
     output = output or sys.stdout
     error = error or sys.stderr
     load_dotenv(dotenv_path=".env")
@@ -72,22 +71,7 @@ def main(
         model_name = _required_env("OPENAI_MODEL")
         api_key = _required_env("OPENAI_API_KEY")
         base_url = os.getenv("BASE_URL", "").strip() or None
-        default_repo = os.getenv("GITHUB_REPO", "").strip()
-        repo = input_fn(f"Repository [{default_repo}]: ").strip() or default_repo
-        if not repo:
-            raise RuntimeError("repository is required")
-        number_text = input_fn("Open PR number: ").strip()
-        try:
-            number = int(number_text)
-        except ValueError as parse_error:
-            raise ValueError(
-                "pull-request number must be an integer"
-            ) from parse_error
-        if number < 1:
-            raise ValueError("pull-request number must be positive")
-    except EOFError:
-        return 0
-    except (RuntimeError, ValueError) as config_error:
+    except RuntimeError as config_error:
         print(f"error: {config_error}", file=error)
         return 2
 
@@ -102,11 +86,6 @@ def main(
 
     try:
         github = GitHubPullRequestReader(client=client)
-        details = github.get_pull_request(repo=repo, number=number)
-        if details["state"] != "open":
-            print(f"error: {repo}#{number} is not open", file=error)
-            return 2
-
         try:
             model = model_factory(
                 model=model_name,
@@ -117,37 +96,40 @@ def main(
             print(f"error: {config_error}", file=error)
             return 2
 
+        chatbot = create_chatbot_graph(source=github, model=model)
+        conversation = cast(
+            ReviewChatState,
+            chatbot.invoke(ReviewChatState(messages=[])),
+        )
         print(
-            f"Reviewing {repo}#{number}: {details['title']} — {details['url']}",
+            "Review chatbot ready; type exit or quit to stop.",
             file=output,
         )
-        print("Enter a Review prompt; type exit or quit to stop.", file=output)
+        print(f"Bot: {conversation['messages'][-1].content}", file=output)
 
         while True:
             try:
-                instructions = input_fn("You: ").strip()
+                user_message = input_fn("You: ").strip()
             except EOFError:
                 break
-            if instructions.lower() in {"exit", "quit"}:
+            if user_message.lower() in {"exit", "quit"}:
                 break
-            if not instructions:
+            if not user_message:
                 continue
 
             try:
-                reviewer = create_deep_review_agent(
-                    source=github,
-                    model=model,
-                    instructions=instructions,
+                conversation["messages"] = [
+                    *conversation["messages"],
+                    HumanMessage(content=user_message),
+                ]
+                conversation = cast(
+                    ReviewChatState,
+                    chatbot.invoke(conversation),
                 )
-                result = reviewer.review(repo=repo, number=number)
-                if not isinstance(result, Review):
-                    print(
-                        f"error: {result.operation.value}: {result.error_type}: "
-                        f"{result.message}",
-                        file=error,
-                    )
-                    continue
-                print(render_report(result).text, file=output, end="")
+                print(
+                    f"Bot: {conversation['messages'][-1].content}",
+                    file=output,
+                )
             except Exception as review_error:  # noqa: BLE001 - keep the loop alive
                 print(
                     f"error: {type(review_error).__name__}: {review_error}",

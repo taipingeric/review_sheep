@@ -141,15 +141,15 @@ def test_chat_reports_github_client_startup_failure(monkeypatch: Any) -> None:
     assert errors.getvalue() == "error: RuntimeError: GitHub credentials rejected\n"
 
 
-def test_chat_exits_cleanly_on_eof_before_selecting_a_pull_request(
+def test_chat_exits_cleanly_on_eof_during_the_conversation(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "acme/widgets")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     output = StringIO()
     errors = StringIO()
+    github = FakeGithubClient()
 
     def end_input(_: str) -> str:
         raise EOFError
@@ -158,19 +158,17 @@ def test_chat_exits_cleanly_on_eof_before_selecting_a_pull_request(
         input_fn=end_input,
         output=output,
         error=errors,
-        github_factory=lambda _: (_ for _ in ()).throw(
-            AssertionError("GitHub client must not be created")
-        ),
+        github_factory=lambda _: github,
         model_factory=lambda **_: "test-model",
     )
 
     assert exit_code == 0
-    assert output.getvalue() == ""
+    assert output.getvalue().startswith("Review chatbot ready;")
     assert errors.getvalue() == ""
+    assert github.closed is True
 
 
 def test_chat_treats_a_whitespace_base_url_as_unset(monkeypatch: Any) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "acme/widgets")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -182,7 +180,7 @@ def test_chat_treats_a_whitespace_base_url_as_unset(monkeypatch: Any) -> None:
         return "test-model"
 
     github = FakeGithubClient()
-    prompts = iter(["", "42", "quit"])
+    prompts = iter(["quit"])
 
     exit_code = main(
         input_fn=lambda _: next(prompts),
@@ -198,19 +196,26 @@ def test_chat_treats_a_whitespace_base_url_as_unset(monkeypatch: Any) -> None:
 
 
 @pytest.mark.parametrize(
-    ("availability", "expected_code", "expected_error"),
+    ("availability", "expected_reply"),
     [
-        ("missing", 1, "error: RuntimeError: pull request not found\n"),
-        ("closed", 2, "error: acme/widgets#42 is not open\n"),
+        (
+            "missing",
+            (
+                "Bot: I could not read acme/widgets#42: RuntimeError: "
+                "pull request not found. Try another number.\n"
+            ),
+        ),
+        (
+            "closed",
+            "Bot: acme/widgets#42 is not open. Try another number.\n",
+        ),
     ],
 )
-def test_chat_rejects_an_unavailable_pull_request_before_initializing_the_model(
+def test_chat_asks_for_another_pull_request_when_one_is_unavailable(
     monkeypatch: Any,
     availability: str,
-    expected_code: int,
-    expected_error: str,
+    expected_reply: str,
 ) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "acme/widgets")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -223,50 +228,88 @@ def test_chat_rejects_an_unavailable_pull_request_before_initializing_the_model(
         repository.pull.state = "closed"
     github = FakeGithubClient()
     github.repository = repository
+    output = StringIO()
     errors = StringIO()
-    prompts = iter(["", "42"])
-
-    def model_must_not_be_created(**_: Any) -> str:
-        raise AssertionError("model must not be created for an unavailable PR")
+    prompts = iter(["acme/widgets", "42", "quit"])
 
     exit_code = main(
         input_fn=lambda _: next(prompts),
-        output=StringIO(),
+        output=output,
         error=errors,
         github_factory=lambda _: github,
-        model_factory=model_must_not_be_created,
+        model_factory=lambda **_: "test-model",
     )
 
-    assert exit_code == expected_code
-    assert errors.getvalue() == expected_error
+    assert exit_code == 0
+    assert expected_reply in output.getvalue()
+    assert errors.getvalue() == ""
     assert github.closed is True
 
 
 def test_chat_continues_after_each_review_snapshot_failure(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "acme/widgets")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     github = FakeGithubClient()
     github.repository = UnavailableSnapshotRepository()
-    prompts = iter(["", "42", "Review correctness.", "Review security.", "quit"])
+    prompts = iter(
+        [
+            "acme/widgets",
+            "42",
+            "Review correctness.",
+            "Review security.",
+            "quit",
+        ]
+    )
+    output = StringIO()
     errors = StringIO()
 
     exit_code = main(
         input_fn=lambda _: next(prompts),
-        output=StringIO(),
+        output=output,
         error=errors,
         github_factory=lambda _: github,
         model_factory=lambda **_: UnusedReviewModel(),
     )
 
     assert exit_code == 0
-    assert errors.getvalue() == (
-        "error: fetch_snapshot: RuntimeError: snapshot unavailable 1\n"
-        "error: fetch_snapshot: RuntimeError: snapshot unavailable 2\n"
+    assert output.getvalue().count(
+        "Bot: Review failed during fetch_snapshot: RuntimeError: "
+        "snapshot unavailable"
+    ) == 2
+    assert errors.getvalue() == ""
+    assert github.closed is True
+
+
+@pytest.mark.parametrize("number", ["not-a-number", "0", "-1"])
+def test_chat_asks_again_for_an_invalid_pull_request_number(
+    monkeypatch: Any,
+    number: str,
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    github = FakeGithubClient()
+    output = StringIO()
+    errors = StringIO()
+    prompts = iter(["acme/widgets", number, "quit"])
+
+    exit_code = main(
+        input_fn=lambda _: next(prompts),
+        output=output,
+        error=errors,
+        github_factory=lambda _: github,
+        model_factory=lambda **_: "test-model",
     )
+
+    assert exit_code == 0
+    assert (
+        "Bot: That is not a positive pull-request number. Try again.\n"
+        in output.getvalue()
+    )
+    assert errors.getvalue() == ""
     assert github.closed is True
 
 
@@ -295,46 +338,9 @@ def test_chat_rejects_missing_required_configuration_before_external_clients(
     assert errors.getvalue() == "error: GITHUB_TOKEN is not set in .env\n"
 
 
-@pytest.mark.parametrize(
-    ("number", "expected_error"),
-    [
-        ("not-a-number", "error: pull-request number must be an integer\n"),
-        ("0", "error: pull-request number must be positive\n"),
-        ("-1", "error: pull-request number must be positive\n"),
-    ],
-)
-def test_chat_rejects_an_invalid_pull_request_number_before_external_clients(
-    monkeypatch: Any,
-    number: str,
-    expected_error: str,
-) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "acme/widgets")
-    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    errors = StringIO()
-    prompts = iter(["", number])
-
-    exit_code = main(
-        input_fn=lambda _: next(prompts),
-        output=StringIO(),
-        error=errors,
-        github_factory=lambda _: (_ for _ in ()).throw(
-            AssertionError("GitHub client must not be created")
-        ),
-        model_factory=lambda **_: (_ for _ in ()).throw(
-            AssertionError("model must not be created")
-        ),
-    )
-
-    assert exit_code == 2
-    assert errors.getvalue() == expected_error
-
-
 def test_chat_configures_the_openai_provider_for_responses_api(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "acme/widgets")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("OPENAI_MODEL", "claude-sonnet-4-6")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -352,7 +358,7 @@ def test_chat_configures_the_openai_provider_for_responses_api(
     )
 
     github = FakeGithubClient()
-    prompts = iter(["", "42", "quit"])
+    prompts = iter(["quit"])
     exit_code = main(
         input_fn=lambda _: next(prompts),
         output=StringIO(),
@@ -368,7 +374,6 @@ def test_chat_configures_the_openai_provider_for_responses_api(
 def test_chat_reads_env_and_reviews_repeated_prompts_until_quit(
     monkeypatch: Any,
 ) -> None:
-    monkeypatch.setenv("GITHUB_REPO", "acme/widgets")
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
@@ -376,7 +381,7 @@ def test_chat_reads_env_and_reviews_repeated_prompts_until_quit(
     github = FakeGithubClient()
     prompts = iter(
         [
-            "",
+            "acme/widgets",
             "42",
             "Focus on correctness regressions.",
             "Now focus on authorization.",

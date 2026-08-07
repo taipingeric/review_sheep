@@ -51,6 +51,36 @@ else:
     print(answer.text)
 ```
 
+## Simple Chatbot Graph
+
+Build a continuous LangGraph chatbot around the deep Review agent. Each turn
+uses exactly one node and follows `START -> Bot -> END`; the accumulated state
+lets `Bot` collect the repository, pull-request number, and review instructions
+through conversation:
+
+```python
+from langchain_core.messages import HumanMessage
+
+from review_sheep import ReviewChatState, create_chatbot_graph
+
+chatbot = create_chatbot_graph(source=github, model=model)
+state = ReviewChatState(messages=[])
+state = chatbot.invoke(state)
+print(state["messages"][-1].content)
+
+# Continue by appending each user reply to the returned state.
+state["messages"] = [
+    *state["messages"],
+    HumanMessage(content="acme/widgets"),
+]
+state = chatbot.invoke(state)
+```
+
+After collecting a valid open pull request, the `Bot` node sends each subsequent
+user message to every Review Lens. Completed graph output keeps the structured
+`Review` in `state["review"]` and appends its rendered Report as the final AI
+message.
+
 ## Review and Report
 
 Review reads changed-file metadata and diffs once. Correctness, security, and
@@ -89,11 +119,10 @@ Install the project with the provider extra you want to test. For OpenAI:
 uv sync --extra openai --extra dev
 ```
 
-The interactive script reads `GITHUB_REPO`, `GITHUB_TOKEN`, `OPENAI_MODEL`,
-`OPENAI_API_KEY`, and optional `BASE_URL` from `.env`:
+The interactive script reads `GITHUB_TOKEN`, `OPENAI_MODEL`, `OPENAI_API_KEY`,
+and optional `BASE_URL` from `.env`:
 
 ```dotenv
-GITHUB_REPO=acme/widgets
 GITHUB_TOKEN=your-read-only-github-token
 OPENAI_MODEL=gpt-5-mini
 OPENAI_API_KEY=your-openai-api-key
@@ -104,15 +133,22 @@ OPENAI_API_KEY=your-openai-api-key
 uv run python scripts/review_chat.py
 ```
 
-Press Enter to accept `GITHUB_REPO` or type another `owner/repo`, then enter an
-open pull-request number. Each following line is sent to all three Review
-Lenses. Type `exit` or `quit` to stop.
+Start the conversation normally. The bot asks for an `owner/repo`, verifies the
+open pull-request number, and then asks what the Review should focus on. Each
+following line starts another Review of the same pull request. Type `exit` or
+`quit` to stop.
 
 ```text
-Repository [acme/widgets]: other/project
-Open PR number: 123
+Review chatbot ready; type exit or quit to stop.
+Bot: Which repository should I review? Enter it as owner/name.
+You: other/project
+Bot: Which open pull-request number should I review in other/project?
+You: 123
+Bot: What should the Review focus on?
 You: Focus on correctness and security regressions
+Bot: # Review Report
 You: Check whether the new behavior has enough tests
+Bot: # Review Report
 You: quit
 ```
 

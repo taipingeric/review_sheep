@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
 from review_sheep import (
@@ -17,9 +17,11 @@ from review_sheep import (
     Location,
     PullRequestSnapshot,
     Review,
+    ReviewChatState,
     ReviewWorkspace,
     Severity,
     SnapshotFile,
+    create_chatbot_graph,
     create_inquiry,
     create_review_agent,
     render_report,
@@ -29,12 +31,33 @@ from review_sheep import (
 class DeterministicModel(BaseChatModel):
     """Return one fixed Inquiry answer without a provider or credentials."""
 
+    structured_tool_name: str | None = None
+
     @property
     def _llm_type(self) -> str:
         return "distribution-smoke-model"
 
     def bind_tools(self, tools: Any, **kwargs: Any) -> DeterministicModel:
-        return self
+        names = [
+            tool.name if hasattr(tool, "name") else tool["function"]["name"]
+            for tool in tools
+        ]
+        structured_tool_name = next(
+            (
+                name
+                for name in names
+                if name
+                in {
+                    "CorrectnessResult",
+                    "SecurityResult",
+                    "ConventionsAndTestsResult",
+                }
+            ),
+            None,
+        )
+        return self.model_copy(
+            update={"structured_tool_name": structured_tool_name}
+        )
 
     def _generate(
         self,
@@ -43,6 +66,24 @@ class DeterministicModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
+        if self.structured_tool_name is not None:
+            return ChatResult(
+                generations=[
+                    ChatGeneration(
+                        message=AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": self.structured_tool_name,
+                                    "args": {"findings": []},
+                                    "id": f"call-{self.structured_tool_name}",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        )
+                    )
+                ]
+            )
         return ChatResult(
             generations=[
                 ChatGeneration(
@@ -75,6 +116,14 @@ class UnusedGitHubReader:
 
 
 class DeterministicSnapshotSource:
+    def get_pull_request(self, *, repo: str, number: int) -> dict[str, Any]:
+        return {
+            "number": number,
+            "state": "open",
+            "title": "Deterministic review",
+            "html_url": f"https://github.com/{repo}/pull/{number}",
+        }
+
     def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
         return PullRequestSnapshot(
             repo=repo,
@@ -107,6 +156,24 @@ class DeterministicReviewRunner:
 
 
 def main() -> None:
+    chatbot = create_chatbot_graph(
+        source=DeterministicSnapshotSource(),
+        model=DeterministicModel(),
+    )
+    chat_state = cast(
+        ReviewChatState,
+        chatbot.invoke(ReviewChatState(messages=[])),
+    )
+    assert "repository" in str(chat_state["messages"][-1].content)
+    for reply in ("acme/widgets", "42", "Review correctness."):
+        chat_state["messages"] = [
+            *chat_state["messages"],
+            HumanMessage(content=reply),
+        ]
+        chat_state = cast(ReviewChatState, chatbot.invoke(chat_state))
+    assert isinstance(chat_state["review"], Review)
+    assert str(chat_state["messages"][-1].content).endswith("No Findings.\n")
+
     inquiry = create_inquiry(
         model=DeterministicModel(),
         github=UnusedGitHubReader(),
