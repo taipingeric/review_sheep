@@ -9,73 +9,24 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from review_sheep import (
-    PullRequestSnapshot,
-    Review,
-    ReviewChatState,
-    ReviewError,
+    InquiryAnswer,
+    InquiryChatState,
     create_chatbot_graph,
+    create_inquiry_agent,
 )
 
 
-class DeterministicSnapshotSource:
-    def get_pull_request(self, *, repo: str, number: int) -> dict[str, Any]:
-        return {
-            "repo": repo,
-            "number": number,
-            "state": "open",
-            "title": "Keep the flock together",
-            "url": f"https://github.com/{repo}/pull/{number}",
-        }
-
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
-        return PullRequestSnapshot(
-            repo=repo,
-            number=number,
-            head_sha="abc123",
-            files=[],
-        )
-
-
-class FailingSnapshotSource:
-    def get_pull_request(self, *, repo: str, number: int) -> dict[str, Any]:
-        return {
-            "repo": repo,
-            "number": number,
-            "state": "open",
-            "title": "Keep the flock together",
-            "url": f"https://github.com/{repo}/pull/{number}",
-        }
-
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
-        raise RuntimeError("GitHub is unavailable")
-
-
-class DeterministicReviewModel(BaseChatModel):
-    structured_tool_name: str | None = None
-    seen_prompts: list[str] = Field(default_factory=list)
+class ScriptedInquiryModel(BaseChatModel):
+    responses: list[AIMessage]
+    response_index: int = 0
+    seen_messages: list[list[BaseMessage]] = Field(default_factory=list)
 
     @property
     def _llm_type(self) -> str:
-        return "deterministic-review-model"
+        return "scripted-inquiry-model"
 
-    def bind_tools(self, tools: Any, **kwargs: Any) -> DeterministicReviewModel:
-        names = [
-            tool.name if hasattr(tool, "name") else tool["function"]["name"]
-            for tool in tools
-        ]
-        structured_tool_name = next(
-            name
-            for name in names
-            if name
-            in {
-                "CorrectnessResult",
-                "SecurityResult",
-                "ConventionsAndTestsResult",
-            }
-        )
-        return self.model_copy(
-            update={"structured_tool_name": structured_tool_name}
-        )
+    def bind_tools(self, tools: Any, **kwargs: Any) -> ScriptedInquiryModel:
+        return self
 
     def _generate(
         self,
@@ -84,122 +35,161 @@ class DeterministicReviewModel(BaseChatModel):
         run_manager: CallbackManagerForLLMRun | None = None,
         **kwargs: Any,
     ) -> ChatResult:
-        prompt = next(
-            str(message.text)
-            for message in reversed(messages)
-            if isinstance(message, HumanMessage)
+        self.seen_messages.append(messages)
+        response = self.responses[self.response_index]
+        self.response_index += 1
+        return ChatResult(generations=[ChatGeneration(message=response)])
+
+
+class FailingInquiryModel(BaseChatModel):
+    @property
+    def _llm_type(self) -> str:
+        return "failing-inquiry-model"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> FailingInquiryModel:
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        raise RuntimeError("gateway unavailable")
+
+
+class FakePullRequestReader:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def list_pull_requests(
+        self, *, state: str, limit: int, repo: str
+    ) -> dict[str, Any]:
+        self.calls.append(
+            ("list_pull_requests", {"state": state, "limit": limit, "repo": repo})
         )
-        self.seen_prompts.append(prompt)
-        assert self.structured_tool_name is not None
-        return ChatResult(
-            generations=[
-                ChatGeneration(
-                    message=AIMessage(
-                        content="",
-                        tool_calls=[
-                            {
-                                "name": self.structured_tool_name,
-                                "args": {"findings": []},
-                                "id": f"call-{self.structured_tool_name}",
-                                "type": "tool_call",
-                            }
-                        ],
-                    )
+        return {
+            "repo": repo,
+            "state": state,
+            "count": 1,
+            "truncated": False,
+            "pull_requests": [
+                {
+                    "number": 42,
+                    "title": "Keep the flock together",
+                    "url": "https://github.com/acme/widgets/pull/42",
+                }
+            ],
+        }
+
+    def get_pull_request(self, *, number: int, repo: str) -> dict[str, Any]:
+        raise AssertionError("not expected in this chat")
+
+    def get_pull_request_reviews(self, *, number: int, repo: str) -> dict[str, Any]:
+        raise AssertionError("not expected in this chat")
+
+
+def test_chatbot_graph_routes_conversation_through_the_inquiry_agent() -> None:
+    model = ScriptedInquiryModel(
+        responses=[
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "list_pull_requests",
+                        "args": {
+                            "state": "open",
+                            "limit": 10,
+                            "repo": "acme/widgets",
+                        },
+                        "id": "call-list",
+                        "type": "tool_call",
+                    }
+                ],
+            ),
+            AIMessage(
+                content=(
+                    "Open pull request: #42 Keep the flock together — "
+                    "https://github.com/acme/widgets/pull/42"
                 )
-            ]
+            ),
+            AIMessage(
+                content=("The newest is #42 — https://github.com/acme/widgets/pull/42")
+            ),
+        ]
+    )
+    github = FakePullRequestReader()
+    agent = create_inquiry_agent(model=model, github=github)
+    chatbot = create_chatbot_graph(agent=agent)
+
+    state = cast(
+        InquiryChatState,
+        chatbot.invoke(InquiryChatState(messages=[])),
+    )
+    assert state["messages"][-1].content == (
+        "What would you like to know about pull requests?"
+    )
+
+    state["messages"] = [
+        *state["messages"],
+        HumanMessage(content="Which pull requests are open in acme/widgets?"),
+    ]
+    state = cast(InquiryChatState, chatbot.invoke(state))
+
+    assert state["answer"] == InquiryAnswer(
+        text=(
+            "Open pull request: #42 Keep the flock together — "
+            "https://github.com/acme/widgets/pull/42"
         )
-
-
-def test_chatbot_graph_runs_the_review_agent_from_start_to_bot_to_end() -> None:
-    model = DeterministicReviewModel()
-    chatbot = create_chatbot_graph(
-        source=DeterministicSnapshotSource(),
-        model=model,
     )
-
-    result = cast(
-        ReviewChatState,
-        chatbot.invoke(ReviewChatState(messages=[])),
-    )
-    assert result["messages"][-1].content == (
-        "Which repository should I review? Enter it as owner/name."
-    )
-
-    result["messages"] = [
-        *result["messages"],
-        HumanMessage(content="acme/widgets"),
+    assert github.calls == [
+        (
+            "list_pull_requests",
+            {"state": "open", "limit": 10, "repo": "acme/widgets"},
+        )
     ]
-    result = cast(
-        ReviewChatState,
-        chatbot.invoke(result),
-    )
-    assert result["repo"] == "acme/widgets"
-    assert result["messages"][-1].content == (
-        "Which open pull-request number should I review in acme/widgets?"
-    )
 
-    result["messages"] = [
-        *result["messages"],
-        HumanMessage(content="42"),
+    state["messages"] = [
+        *state["messages"],
+        HumanMessage(content="Which one is newest?"),
     ]
-    result = cast(
-        ReviewChatState,
-        chatbot.invoke(result),
+    state = cast(InquiryChatState, chatbot.invoke(state))
+
+    assert state["answer"].text == (
+        "The newest is #42 — https://github.com/acme/widgets/pull/42"
     )
-    assert result["pull_request_number"] == 42
+    assert any(
+        message.text == "Which pull requests are open in acme/widgets?"
+        for message in model.seen_messages[-1]
+    )
+
+
+def test_chatbot_graph_returns_inquiry_failures_as_structured_chat_state() -> None:
+    agent = create_inquiry_agent(
+        model=FailingInquiryModel(),
+        github=FakePullRequestReader(),
+    )
+    chatbot = create_chatbot_graph(agent=agent)
+
+    result = chatbot.invoke(
+        {"messages": [HumanMessage(content="Which pull requests are open?")]}
+    )
+
+    assert result["answer"] == InquiryAnswer(error="RuntimeError: gateway unavailable")
     assert result["messages"][-1].content == (
-        "What should the Review focus on?"
+        "Inquiry failed: RuntimeError: gateway unavailable"
     )
 
-    result["messages"] = [
-        *result["messages"],
-        HumanMessage(content="Focus on authorization regressions."),
-    ]
-    result = cast(
-        ReviewChatState,
-        chatbot.invoke(result),
+
+def test_chatbot_graph_has_one_langgraph_bot_node() -> None:
+    agent = create_inquiry_agent(
+        model=ScriptedInquiryModel(responses=[]),
+        github=FakePullRequestReader(),
     )
+    chatbot = create_chatbot_graph(agent=agent)
 
-    assert isinstance(result["review"], Review)
-    assert result["review"].repo == "acme/widgets"
-    assert result["review"].pull_request_number == 42
-    assert result["review"].findings == []
-    assert result["messages"][-1].content == """# Review Report: acme/widgets#42
-
-Head: `abc123`
-Findings: 0
-
-No Findings.
-"""
-    assert len(model.seen_prompts) == 3
-    assert all(
-        "Caller instructions:\nFocus on authorization regressions." in prompt
-        for prompt in model.seen_prompts
-    )
-    assert {
-        (edge.source, edge.target) for edge in chatbot.get_graph().edges
-    } == {
+    assert {(edge.source, edge.target) for edge in chatbot.get_graph().edges} == {
         ("__start__", "Bot"),
         ("Bot", "__end__"),
     }
-
-
-def test_chatbot_graph_returns_review_failures_as_structured_chat_state() -> None:
-    chatbot = create_chatbot_graph(
-        source=FailingSnapshotSource(),
-        model=DeterministicReviewModel(),
-    )
-
-    result = chatbot.invoke(
-        {
-            "repo": "acme/widgets",
-            "pull_request_number": 42,
-            "messages": [HumanMessage(content="Review correctness.")],
-        }
-    )
-
-    assert isinstance(result["review"], ReviewError)
-    assert result["messages"][-1].content == (
-        "Review failed during fetch_snapshot: RuntimeError: "
-        "GitHub is unavailable"
-    )

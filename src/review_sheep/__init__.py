@@ -1,8 +1,7 @@
 """Review Sheep — build agents that review GitHub pull requests."""
 
 from review_sheep.chat_graph import (
-    ReviewChatSource,
-    ReviewChatState,
+    InquiryChatState,
     create_chatbot_graph,
 )
 from review_sheep.domain import (
@@ -23,10 +22,10 @@ from review_sheep.domain import (
 )
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import (
-    Inquiry,
+    InquiryAgent,
     InquiryAnswer,
     PullRequestReader,
-    create_inquiry,
+    create_inquiry_agent,
 )
 from review_sheep.report import render_report
 from review_sheep.review import (
@@ -45,8 +44,9 @@ __all__ = [
     "DeepAgentReviewRunner",
     "Finding",
     "GitHubPullRequestReader",
-    "Inquiry",
+    "InquiryAgent",
     "InquiryAnswer",
+    "InquiryChatState",
     "Lens",
     "Location",
     "Manifest",
@@ -56,8 +56,6 @@ __all__ = [
     "Report",
     "Review",
     "ReviewAgent",
-    "ReviewChatSource",
-    "ReviewChatState",
     "ReviewError",
     "ReviewOperation",
     "ReviewRunner",
@@ -67,7 +65,7 @@ __all__ = [
     "SnapshotSource",
     "create_chatbot_graph",
     "create_deep_review_agent",
-    "create_inquiry",
+    "create_inquiry_agent",
     "create_review_agent",
     "render_report",
 ]

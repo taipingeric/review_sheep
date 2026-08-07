@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from typing import Any, Protocol
 
 from langchain.agents import create_agent
 from langchain.tools import tool
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, ConfigDict, model_validator
 
 SYSTEM_PROMPT = (
@@ -50,23 +51,28 @@ class InquiryAnswer(BaseModel):
         return self
 
 
-class Inquiry:
-    """Answer pull-request metadata questions through one small interface."""
+class InquiryAgent:
+    """Answer pull-request metadata questions through a LangChain agent."""
 
     def __init__(self, agent: Any) -> None:
         self._agent = agent
 
     def ask(self, question: str) -> InquiryAnswer:
-        """Answer one metadata-only question."""
+        """Answer one standalone metadata-only question."""
         if not question.strip():
             return InquiryAnswer(error="Inquiry question must not be empty")
 
+        return self.invoke([HumanMessage(content=question)])
+
+    def invoke(self, messages: Sequence[BaseMessage]) -> InquiryAnswer:
+        """Answer from accumulated conversation messages."""
+        if not messages:
+            return InquiryAnswer(error="Inquiry messages must not be empty")
+
         try:
-            state = self._agent.invoke(
-                {"messages": [{"role": "user", "content": question}]}
-            )
-            messages = state["messages"]
-            message = messages[-1]
+            state = self._agent.invoke({"messages": list(messages)})
+            result_messages = state["messages"]
+            message = result_messages[-1]
         except Exception as error:  # noqa: BLE001 - errors are public data here
             return InquiryAnswer(error=f"{type(error).__name__}: {error}")
 
@@ -74,7 +80,7 @@ class Inquiry:
             return InquiryAnswer(error="Inquiry produced no answer")
         return InquiryAnswer(
             text=message.text,
-            incomplete=_contains_truncated_tool_data(messages),
+            incomplete=_contains_truncated_tool_data(result_messages),
         )
 
 
@@ -162,7 +168,9 @@ def _tools(github: PullRequestReader) -> list[Any]:
     return [list_pull_requests, get_pull_request, get_pull_request_reviews]
 
 
-def create_inquiry(*, model: BaseChatModel, github: PullRequestReader) -> Inquiry:
-    """Create the read-only Inquiry module from explicit adapters."""
+def create_inquiry_agent(
+    *, model: str | BaseChatModel, github: PullRequestReader
+) -> InquiryAgent:
+    """Create the read-only LangChain Inquiry agent from explicit adapters."""
     agent = create_agent(model=model, tools=_tools(github), system_prompt=SYSTEM_PROMPT)
-    return Inquiry(agent)
+    return InquiryAgent(agent)

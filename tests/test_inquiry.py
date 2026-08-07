@@ -9,7 +9,12 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, ValidationError
 
-from review_sheep import GitHubPullRequestReader, InquiryAnswer, create_inquiry
+from review_sheep import (
+    GitHubPullRequestReader,
+    InquiryAgent,
+    InquiryAnswer,
+    create_inquiry_agent,
+)
 
 
 class ScriptedToolCallingModel(BaseChatModel):
@@ -99,9 +104,7 @@ class PullRequestStateReader(FakeGitHubReader):
             "url": "https://github.com/acme/widgets/pull/42",
         }
 
-    def get_pull_request_reviews(
-        self, *, number: int, repo: str
-    ) -> dict[str, Any]:
+    def get_pull_request_reviews(self, *, number: int, repo: str) -> dict[str, Any]:
         self.calls.append(
             ("get_pull_request_reviews", {"number": number, "repo": repo})
         )
@@ -161,7 +164,8 @@ def test_inquiry_answers_from_read_only_github_metadata() -> None:
     )
     github = FakeGitHubReader()
 
-    inquiry = create_inquiry(model=model, github=github)
+    inquiry = create_inquiry_agent(model=model, github=github)
+    assert isinstance(inquiry, InquiryAgent)
     answer = inquiry.ask("Which pull requests are open in acme/widgets?")
 
     assert answer.text == (
@@ -182,8 +186,9 @@ def test_inquiry_answers_from_read_only_github_metadata() -> None:
     ]
 
 
-def test_inquiry_reads_pull_request_details_and_review_state_through_public_seam(
-) -> None:
+def test_inquiry_reads_pull_request_details_and_review_state_through_public_seam() -> (
+    None
+):
     model = ScriptedToolCallingModel(
         responses=[
             AIMessage(
@@ -218,7 +223,7 @@ def test_inquiry_reads_pull_request_details_and_review_state_through_public_seam
     )
     github = PullRequestStateReader()
 
-    answer = create_inquiry(model=model, github=github).ask(
+    answer = create_inquiry_agent(model=model, github=github).ask(
         "What is the review state of acme/widgets#42?"
     )
 
@@ -237,7 +242,7 @@ def test_inquiry_reads_pull_request_details_and_review_state_through_public_seam
 def test_inquiry_returns_an_empty_question_as_stable_error_data() -> None:
     model = ScriptedToolCallingModel(responses=[])
 
-    answer = create_inquiry(model=model, github=FakeGitHubReader()).ask("   ")
+    answer = create_inquiry_agent(model=model, github=FakeGitHubReader()).ask("   ")
 
     assert answer == InquiryAnswer(error="Inquiry question must not be empty")
     assert model.seen_messages == []
@@ -262,7 +267,7 @@ def test_inquiry_contains_missing_repository_configuration_as_tool_data() -> Non
     )
     github = GitHubPullRequestReader(client=object())
 
-    answer = create_inquiry(model=model, github=github).ask(
+    answer = create_inquiry_agent(model=model, github=github).ask(
         "Which pull requests are open?"
     )
 
@@ -299,7 +304,7 @@ def test_inquiry_returns_invalid_tool_input_as_data_without_calling_github() -> 
     )
     github = FakeGitHubReader()
 
-    answer = create_inquiry(model=model, github=github).ask(
+    answer = create_inquiry_agent(model=model, github=github).ask(
         "Which pull requests are merged in acme/widgets?"
     )
 
@@ -332,7 +337,7 @@ def test_inquiry_contains_github_failures_with_operation_and_repo_context() -> N
     )
     github = FailingGitHubReader()
 
-    answer = create_inquiry(model=model, github=github).ask(
+    answer = create_inquiry_agent(model=model, github=github).ask(
         "Which pull requests are open in acme/widgets?"
     )
 
@@ -369,7 +374,7 @@ def test_inquiry_marks_its_answer_incomplete_when_github_truncates_metadata() ->
         ]
     )
 
-    answer = create_inquiry(model=model, github=TruncatedGitHubReader()).ask(
+    answer = create_inquiry_agent(model=model, github=TruncatedGitHubReader()).ask(
         "Which pull request is open in acme/widgets?"
     )
 

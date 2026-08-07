@@ -13,16 +13,16 @@ from review_sheep import (
     Confidence,
     Finding,
     InquiryAnswer,
+    InquiryChatState,
     Lens,
     Location,
     PullRequestSnapshot,
     Review,
-    ReviewChatState,
     ReviewWorkspace,
     Severity,
     SnapshotFile,
     create_chatbot_graph,
-    create_inquiry,
+    create_inquiry_agent,
     create_review_agent,
     render_report,
 )
@@ -55,9 +55,7 @@ class DeterministicModel(BaseChatModel):
             ),
             None,
         )
-        return self.model_copy(
-            update={"structured_tool_name": structured_tool_name}
-        )
+        return self.model_copy(update={"structured_tool_name": structured_tool_name})
 
     def _generate(
         self,
@@ -89,8 +87,7 @@ class DeterministicModel(BaseChatModel):
                 ChatGeneration(
                     message=AIMessage(
                         content=(
-                            "Pull request #42: "
-                            "https://github.com/acme/widgets/pull/42"
+                            "Pull request #42: https://github.com/acme/widgets/pull/42"
                         )
                     )
                 )
@@ -109,9 +106,7 @@ class UnusedGitHubReader:
     def get_pull_request(self, *, number: int, repo: str) -> dict[str, Any]:
         raise AssertionError("the smoke Inquiry must not call GitHub")
 
-    def get_pull_request_reviews(
-        self, *, number: int, repo: str
-    ) -> dict[str, Any]:
+    def get_pull_request_reviews(self, *, number: int, repo: str) -> dict[str, Any]:
         raise AssertionError("the smoke Inquiry must not call GitHub")
 
 
@@ -156,25 +151,26 @@ class DeterministicReviewRunner:
 
 
 def main() -> None:
-    chatbot = create_chatbot_graph(
-        source=DeterministicSnapshotSource(),
+    inquiry_agent = create_inquiry_agent(
         model=DeterministicModel(),
+        github=UnusedGitHubReader(),
     )
+    chatbot = create_chatbot_graph(agent=inquiry_agent)
     chat_state = cast(
-        ReviewChatState,
-        chatbot.invoke(ReviewChatState(messages=[])),
+        InquiryChatState,
+        chatbot.invoke(InquiryChatState(messages=[])),
     )
-    assert "repository" in str(chat_state["messages"][-1].content)
-    for reply in ("acme/widgets", "42", "Review correctness."):
-        chat_state["messages"] = [
-            *chat_state["messages"],
-            HumanMessage(content=reply),
-        ]
-        chat_state = cast(ReviewChatState, chatbot.invoke(chat_state))
-    assert isinstance(chat_state["review"], Review)
-    assert str(chat_state["messages"][-1].content).endswith("No Findings.\n")
+    assert "pull requests" in str(chat_state["messages"][-1].content)
+    chat_state["messages"] = [
+        *chat_state["messages"],
+        HumanMessage(content="Which pull request should I inspect?"),
+    ]
+    chat_state = cast(InquiryChatState, chatbot.invoke(chat_state))
+    assert chat_state["answer"] == InquiryAnswer(
+        text="Pull request #42: https://github.com/acme/widgets/pull/42"
+    )
 
-    inquiry = create_inquiry(
+    inquiry = create_inquiry_agent(
         model=DeterministicModel(),
         github=UnusedGitHubReader(),
     )

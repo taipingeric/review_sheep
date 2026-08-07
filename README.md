@@ -11,6 +11,10 @@ Review Sheep is read-only. It never submits reviews, posts comments, changes
 labels, or otherwise writes Findings back to GitHub. Publishing a rendered
 Report is the caller's responsibility.
 
+The implementation uses LangChain agents for model and tool execution, and
+LangGraph for conversational state orchestration. See
+[ARCHITECTURE.md](ARCHITECTURE.md) for the complete design.
+
 ## Install
 
 Review Sheep requires Python 3.11 or newer.
@@ -34,7 +38,7 @@ metadata-only tools; it does not fetch changed code or run Review subagents.
 from github import Auth, Github
 from langchain_openai import ChatOpenAI
 
-from review_sheep import GitHubPullRequestReader, create_inquiry
+from review_sheep import GitHubPullRequestReader, create_inquiry_agent
 
 github = GitHubPullRequestReader(
     client=Github(auth=Auth.Token("github-token")),
@@ -42,9 +46,8 @@ github = GitHubPullRequestReader(
 )
 model = ChatOpenAI(model="gpt-5-mini", api_key="openai-key")
 
-answer = create_inquiry(model=model, github=github).ask(
-    "Which pull requests are awaiting review?"
-)
+inquiry_agent = create_inquiry_agent(model=model, github=github)
+answer = inquiry_agent.ask("Which pull requests are awaiting review?")
 if answer.error:
     print(answer.error)
 else:
@@ -53,33 +56,32 @@ else:
 
 ## Simple Chatbot Graph
 
-Build a continuous LangGraph chatbot around the deep Review agent. Each turn
-uses exactly one node and follows `START -> Bot -> END`; the accumulated state
-lets `Bot` collect the repository, pull-request number, and review instructions
-through conversation:
+Build a continuous LangGraph chatbot around the LangChain Inquiry agent. Each
+turn uses exactly one node and follows `START -> Bot -> END`; LangGraph keeps the
+conversation messages while the Inquiry agent selects read-only GitHub metadata
+tools and answers each question:
 
 ```python
 from langchain_core.messages import HumanMessage
 
-from review_sheep import ReviewChatState, create_chatbot_graph
+from review_sheep import InquiryChatState, create_chatbot_graph
 
-chatbot = create_chatbot_graph(source=github, model=model)
-state = ReviewChatState(messages=[])
+chatbot = create_chatbot_graph(agent=inquiry_agent)
+state = InquiryChatState(messages=[])
 state = chatbot.invoke(state)
 print(state["messages"][-1].content)
 
 # Continue by appending each user reply to the returned state.
 state["messages"] = [
     *state["messages"],
-    HumanMessage(content="acme/widgets"),
+    HumanMessage(content="Which open PRs in acme/widgets need review?"),
 ]
 state = chatbot.invoke(state)
 ```
 
-After collecting a valid open pull request, the `Bot` node sends each subsequent
-user message to every Review Lens. Completed graph output keeps the structured
-`Review` in `state["review"]` and appends its rendered Report as the final AI
-message.
+The `Bot` node sends the accumulated conversation to `InquiryAgent`. Completed
+graph output keeps the structured `InquiryAnswer` in `state["answer"]` and
+appends its text as the final AI message.
 
 ## Review and Report
 
@@ -111,7 +113,7 @@ else:
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
 
-## Try live Review prompts in a loop
+## Try live Inquiry prompts in a loop
 
 Install the project with the provider extra you want to test. For OpenAI:
 
@@ -133,25 +135,20 @@ OPENAI_API_KEY=your-openai-api-key
 uv run python scripts/review_chat.py
 ```
 
-Start the conversation normally. The bot asks for an `owner/repo`, verifies the
-open pull-request number, and then asks what the Review should focus on. Each
-following line starts another Review of the same pull request. Type `exit` or
-`quit` to stop.
+Ask metadata questions naturally. The Inquiry agent can list pull requests, read
+one pull request, and inspect its review state. Type `exit` or `quit` to stop.
 
 ```text
-Review chatbot ready; type exit or quit to stop.
-Bot: Which repository should I review? Enter it as owner/name.
-You: other/project
-Bot: Which open pull-request number should I review in other/project?
-You: 123
-Bot: What should the Review focus on?
-You: Focus on correctness and security regressions
-Bot: # Review Report
-You: Check whether the new behavior has enough tests
-Bot: # Review Report
+Inquiry chatbot ready; type exit or quit to stop.
+Bot: What would you like to know about pull requests?
+You: Which pull requests are open in other/project?
+Bot: Open pull requests: #123 ...
+You: What is the review state of #123?
+Bot: Pull request #123 ...
 You: quit
 ```
 
 The GitHub token must be able to read the target repository; private
-repositories require corresponding read access. Every prompt prints a local
-Report and never posts reviews, comments, or Findings to GitHub.
+repositories require corresponding read access. Inquiry is metadata-only and
+never posts reviews, comments, or Findings to GitHub. Changed-code Review is
+available separately through `create_deep_review_agent`.

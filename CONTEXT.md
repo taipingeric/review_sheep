@@ -3,6 +3,9 @@
 A Python library for building agents that review GitHub pull requests. It reads
 pull requests through the GitHub API and produces structured findings.
 
+The implementation is based on LangChain agents and LangGraph orchestration.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete runtime architecture.
+
 ## Language
 
 **Finding**:

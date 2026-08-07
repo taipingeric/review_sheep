@@ -4,6 +4,9 @@ Answering "which PRs are open?" and reviewing a 40-file diff have very different
 cost and capability needs, so we build two paths rather than one: an Inquiry path
 on a plain tool-calling agent over read-only GitHub metadata, and a Review path
 on a deep agent with planning, a filesystem for diffs, and review subagents.
+`InquiryAgent` and the deep Review agents are LangChain agents. The conversational
+entrypoint is a LangGraph whose Bot node delegates accumulated messages to
+`InquiryAgent`; the graph does not implement GitHub or Review orchestration itself.
 
 ## Consequences
 
