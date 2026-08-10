@@ -1,0 +1,21 @@
+name: Review Sheep
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/review-pr.yml
+    with:
+      review_sheep_ref: ${{ github.event.pull_request.head.sha }}
+      model: ${{ vars.OPENAI_MODEL || 'gpt-5-mini' }}
+      base_url: ${{ vars.BASE_URL }}
+      instructions: ${{ vars.REVIEW_INSTRUCTIONS }}
+    secrets:
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}

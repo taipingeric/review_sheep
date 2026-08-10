@@ -188,6 +188,17 @@ non-interactive `scripts/review_pr.py`. The Markdown Report is printed in the
 job log and appended to the GitHub Actions step summary; it is not posted to the
 pull request.
 
+This repository also contains `.github/workflows/review.yml`, which runs the
+reusable workflow automatically for same-repository pull requests. Configure:
+
+- repository secret `OPENAI_API_KEY` (required);
+- repository variable `OPENAI_MODEL` (optional, defaults to `gpt-5-mini`);
+- repository variable `BASE_URL` (optional); and
+- repository variable `REVIEW_INSTRUCTIONS` (optional).
+
+Fork pull requests are intentionally skipped because the `pull_request` event
+does not expose repository model secrets to untrusted forks.
+
 Add an `OPENAI_API_KEY` repository secret to the repository being reviewed, then
 create `.github/workflows/review-sheep.yml` there:
 

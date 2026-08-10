@@ -176,3 +176,13 @@ def test_reusable_workflow_keeps_tooling_outside_the_review_checkout() -> None:
     assert "path: review-target" in workflow
     assert "path: review-sheep" in workflow
     assert "python scripts/review_pr.py" in workflow
+
+
+def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
+    workflow = (Path(__file__).parents[1] / ".github/workflows/review.yml").read_text()
+
+    assert "pull_request:" in workflow
+    assert "uses: ./.github/workflows/review-pr.yml" in workflow
+    assert "review_sheep_ref: ${{ github.event.pull_request.head.sha }}" in workflow
+    assert "openai_api_key: ${{ secrets.OPENAI_API_KEY }}" in workflow
+    assert "head.repo.full_name == github.repository" in workflow
