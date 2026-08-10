@@ -5,46 +5,18 @@ from __future__ import annotations
 import os
 import sys
 from collections.abc import Callable
-from typing import Any, Protocol, TextIO, cast
+from typing import Any, TextIO, cast
 
 from dotenv import load_dotenv
-from github import Auth, Github
-from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
-from pydantic import SecretStr
 
 from review_sheep.chat_graph import ChatState, create_chatbot_graph
+from review_sheep.checkout import GitCheckoutSource
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import create_inquiry_agent
 from review_sheep.intent import create_intent_classifier
+from review_sheep.providers import ModelFactory, github_client, openai_model
 from review_sheep.review import create_deep_review_agent
-
-
-class ModelFactory(Protocol):
-    def __call__(
-        self, *, model: str, api_key: str, base_url: str | None
-    ) -> str | BaseChatModel: ...
-
-
-def _github_client(token: str) -> Github:
-    return Github(auth=Auth.Token(token))
-
-
-def _openai_model(*, model: str, api_key: str, base_url: str | None) -> BaseChatModel:
-    try:
-        from langchain_openai import ChatOpenAI
-    except ImportError as error:
-        raise RuntimeError(
-            "langchain-openai is not installed; run uv sync --extra openai"
-        ) from error
-
-    return ChatOpenAI(
-        model=model,
-        api_key=SecretStr(api_key),
-        base_url=base_url,
-        temperature=0,
-        use_responses_api=True,
-    )
 
 
 def _required_env(name: str) -> str:
@@ -59,8 +31,8 @@ def main(
     input_fn: Callable[[str], str] = input,
     output: TextIO | None = None,
     error: TextIO | None = None,
-    github_factory: Callable[[str], Any] = _github_client,
-    model_factory: ModelFactory = _openai_model,
+    github_factory: Callable[[str], Any] = github_client,
+    model_factory: ModelFactory = openai_model,
 ) -> int:
     """Read .env and continuously route Inquiry and Review requests."""
     output = output or sys.stdout
@@ -99,7 +71,11 @@ def main(
 
         inquiry_agent = create_inquiry_agent(model=model, github=github)
         intent_classifier = create_intent_classifier(model=model)
-        review_agent = create_deep_review_agent(source=github, model=model)
+        checkout = GitCheckoutSource(
+            revisions=github,
+            root=os.getenv("REVIEW_CHECKOUT", ".").strip() or ".",
+        )
+        review_agent = create_deep_review_agent(source=checkout, model=model)
         chatbot = create_chatbot_graph(
             agent=inquiry_agent,
             classifier=intent_classifier,

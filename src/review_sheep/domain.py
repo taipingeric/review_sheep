@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import Enum
+from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -35,8 +36,7 @@ class Lens(str, Enum):
 class ReviewOperation(str, Enum):
     """The Review pipeline stage a ReviewError came from."""
 
-    FETCH_SNAPSHOT = "fetch_snapshot"
-    PREPARE_WORKSPACE = "prepare_workspace"
+    PREPARE_CHECKOUT = "prepare_checkout"
     RUN_REVIEW = "run_review"
 
 
@@ -87,7 +87,7 @@ class InquiryAnswer(BaseModel):
 
 
 class Location(BaseModel):
-    """Where a Finding applies: whole snapshot, one file, or one line range."""
+    """Where a Finding applies: whole Review, one file, or one line range."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -124,66 +124,27 @@ class Finding(BaseModel):
     lens: Lens
 
 
-class SnapshotFile(BaseModel):
-    """One changed file as fetched from GitHub, including its raw patch."""
-
-    model_config = ConfigDict(frozen=True)
-
-    path: str
-    status: str
-    additions: int = Field(ge=0)
-    deletions: int = Field(ge=0)
-    patch: str
-    previous_path: str | None = None
-
-
-class PullRequestSnapshot(BaseModel):
-    """One pull request's changed code pinned to a single head commit."""
+class PullRequestRevision(BaseModel):
+    """The immutable Git revisions identifying one pull request."""
 
     model_config = ConfigDict(frozen=True)
 
     repo: str
     number: int = Field(gt=0)
-    head_sha: str
-    files: list[SnapshotFile]
+    base_sha: str = Field(min_length=1)
+    head_sha: str = Field(min_length=1)
 
 
-class ManifestFile(BaseModel):
-    """One manifest entry pointing a reviewer at a virtual diff file."""
-
-    model_config = ConfigDict(frozen=True)
-
-    path: str
-    status: str
-    additions: int = Field(ge=0)
-    deletions: int = Field(ge=0)
-    changes: int = Field(ge=0)
-    diff_path: str
-    previous_path: str | None = None
-
-
-class Manifest(BaseModel):
-    """The index a reviewer reads first to navigate a snapshot."""
+class ReviewCheckout(BaseModel):
+    """A clean local Git checkout pinned to one pull-request revision."""
 
     model_config = ConfigDict(frozen=True)
 
     repo: str
     pull_request_number: int = Field(gt=0)
-    head_sha: str
-    files: list[ManifestFile]
-
-
-class ReviewWorkspace(BaseModel):
-    """A manifest plus the virtual files a Review Runner reads from."""
-
-    model_config = ConfigDict(frozen=True)
-
-    manifest: Manifest
-    files: dict[str, str]
-
-    def read(self, path: str) -> str:
-        """Read one virtual Review file."""
-        return self.files[path]
+    base_sha: str = Field(min_length=1)
+    head_sha: str = Field(min_length=1)
+    root: Path
 
 
 class Review(BaseModel):
@@ -193,8 +154,8 @@ class Review(BaseModel):
 
     repo: str
     pull_request_number: int = Field(gt=0)
-    head_sha: str
-    manifest: Manifest
+    base_sha: str = Field(min_length=1)
+    head_sha: str = Field(min_length=1)
     findings: list[Finding]
 
 

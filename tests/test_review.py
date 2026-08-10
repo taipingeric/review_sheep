@@ -1,56 +1,58 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
+from deepagents.backends import FilesystemBackend
 from langchain.agents.structured_output import ToolStrategy
 from pydantic import ValidationError
 
 from review_sheep import (
     Confidence,
-    DeepAgentReviewRunner,
     Finding,
     Lens,
     Location,
-    PullRequestSnapshot,
     Review,
+    ReviewCheckout,
     ReviewError,
     ReviewOperation,
-    ReviewWorkspace,
     Severity,
-    SnapshotFile,
     create_deep_review_agent,
     create_review_agent,
 )
 from review_sheep import review as review_module
 
 
-class FakeSnapshotSource:
-    def __init__(self, snapshot: PullRequestSnapshot) -> None:
-        self.snapshot = snapshot
+def _checkout(root: Path) -> ReviewCheckout:
+    return ReviewCheckout(
+        repo="acme/widgets",
+        pull_request_number=42,
+        base_sha="base123",
+        head_sha="head456",
+        root=root,
+    )
+
+
+class FakeCheckoutSource:
+    def __init__(self, checkout: ReviewCheckout) -> None:
+        self.checkout = checkout
         self.calls: list[dict[str, Any]] = []
 
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
+    def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
         self.calls.append({"repo": repo, "number": number})
-        return self.snapshot
+        return self.checkout
 
 
 class DeterministicReviewRunner:
     def __init__(self) -> None:
-        self.workspaces: list[ReviewWorkspace] = []
+        self.checkouts: list[ReviewCheckout] = []
 
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
-        self.workspaces.append(workspace)
-        caller = workspace.read("/diffs/src/caller.py.diff")
-        callee = workspace.read("/diffs/src/callee.py.diff")
-        assert "normalize_user(user)" in caller
-        assert "def normalize_user(user, context)" in callee
+    def run(self, checkout: ReviewCheckout) -> list[Finding]:
+        self.checkouts.append(checkout)
         return [
             Finding(
-                description=(
-                    "normalize_user now requires context, but its caller still passes "
-                    "only user."
-                ),
+                description="The changed caller omits a required argument.",
                 location=Location(path="src/caller.py", start_line=12, end_line=12),
                 severity=Severity.HIGH,
                 confidence=Confidence.CONFIRMED,
@@ -59,7 +61,17 @@ class DeterministicReviewRunner:
         ]
 
 
-class FakeLensSubagent:
+class FailingCheckoutSource:
+    def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
+        raise RuntimeError("checkout HEAD does not match pull request head")
+
+
+class FailingReviewRunner:
+    def run(self, checkout: ReviewCheckout) -> list[Finding]:
+        raise TimeoutError("model timed out")
+
+
+class FakeLensAgent:
     def __init__(self, finding: dict[str, Any]) -> None:
         self.finding = finding
         self.calls: list[dict[str, Any]] = []
@@ -69,91 +81,23 @@ class FakeLensSubagent:
         return {"structured_response": {"findings": [self.finding]}}
 
 
-class FailingSnapshotSource:
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
-        raise RuntimeError("GitHub is unavailable")
-
-
-class FailingReviewRunner:
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
-        raise TimeoutError("model timed out")
-
-
-def test_review_returns_a_cross_file_correctness_finding_from_one_snapshot() -> None:
-    snapshot = PullRequestSnapshot(
-        repo="acme/widgets",
-        number=42,
-        head_sha="abc123",
-        files=[
-            SnapshotFile(
-                path="src/caller.py",
-                status="modified",
-                additions=1,
-                deletions=1,
-                patch="@@ -12 +12 @@\n-normalize_user(user, context)\n+normalize_user(user)",
-            ),
-            SnapshotFile(
-                path="src/callee.py",
-                status="modified",
-                additions=1,
-                deletions=1,
-                patch=(
-                    "@@ -3 +3 @@\n-def normalize_user(user):\n"
-                    "+def normalize_user(user, context):"
-                ),
-            ),
-        ],
-    )
-    source = FakeSnapshotSource(snapshot)
+def test_review_runs_over_one_fixed_checkout(tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path)
+    source = FakeCheckoutSource(checkout)
     runner = DeterministicReviewRunner()
 
-    review = create_review_agent(source=source, runner=runner).review(
+    result = create_review_agent(source=source, runner=runner).review(
         repo="acme/widgets", number=42
     )
 
-    assert isinstance(review, Review)
+    assert isinstance(result, Review)
+    assert result.repo == "acme/widgets"
+    assert result.pull_request_number == 42
+    assert result.base_sha == "base123"
+    assert result.head_sha == "head456"
+    assert len(result.findings) == 1
     assert source.calls == [{"repo": "acme/widgets", "number": 42}]
-    assert len(runner.workspaces) == 1
-    assert runner.workspaces[0].manifest.model_dump() == {
-        "repo": "acme/widgets",
-        "pull_request_number": 42,
-        "head_sha": "abc123",
-        "files": [
-            {
-                "path": "src/caller.py",
-                "status": "modified",
-                "additions": 1,
-                "deletions": 1,
-                "changes": 2,
-                "diff_path": "/diffs/src/caller.py.diff",
-                "previous_path": None,
-            },
-            {
-                "path": "src/callee.py",
-                "status": "modified",
-                "additions": 1,
-                "deletions": 1,
-                "changes": 2,
-                "diff_path": "/diffs/src/callee.py.diff",
-                "previous_path": None,
-            },
-        ],
-    }
-    assert review.repo == "acme/widgets"
-    assert review.pull_request_number == 42
-    assert review.head_sha == "abc123"
-    assert review.manifest == runner.workspaces[0].manifest
-    assert review.findings == [
-        Finding(
-            description=(
-                "normalize_user now requires context, but its caller still passes only user."
-            ),
-            location=Location(path="src/caller.py", start_line=12, end_line=12),
-            severity=Severity.HIGH,
-            confidence=Confidence.CONFIRMED,
-            lens=Lens.CORRECTNESS,
-        )
-    ]
+    assert runner.checkouts == [checkout]
 
 
 @pytest.mark.parametrize(
@@ -172,110 +116,13 @@ def test_location_rejects_incomplete_or_invalid_line_ranges(
         Location(**values)
 
 
-def test_deep_review_runs_every_lens_over_one_snapshot_without_merging() -> None:
-    shared_location = {
-        "path": "src/auth.py",
-        "start_line": 8,
-        "end_line": 8,
-    }
-    subagents = {
-        Lens.CORRECTNESS: FakeLensSubagent(
-            {
-                "description": "Removing actor bypasses authorization.",
-                "location": shared_location,
-                "severity": "high",
-                "confidence": "confirmed",
-                "lens": "correctness",
-            }
-        ),
-        Lens.SECURITY: FakeLensSubagent(
-            {
-                "description": "Removing actor bypasses authorization.",
-                "location": shared_location,
-                "severity": "critical",
-                "confidence": "confirmed",
-                "lens": "security",
-            }
-        ),
-        Lens.CONVENTIONS_AND_TESTS: FakeLensSubagent(
-            {
-                "description": "The authorization regression has no failing test.",
-                "location": {"path": "tests/test_auth.py"},
-                "severity": "medium",
-                "confidence": "likely",
-                "lens": "conventions-and-tests",
-            }
-        ),
-    }
-    source = FakeSnapshotSource(
-        PullRequestSnapshot(
-            repo="acme/widgets",
-            number=42,
-            head_sha="abc123",
-            files=[
-                SnapshotFile(
-                    path="src/auth.py",
-                    status="modified",
-                    additions=1,
-                    deletions=1,
-                    patch="@@ -8 +8 @@\n-authorize(actor)\n+authorize()",
-                ),
-                SnapshotFile(
-                    path="tests/test_auth.py",
-                    status="modified",
-                    additions=1,
-                    deletions=0,
-                    patch="@@ -20,0 +21 @@\n+assert response.ok",
-                ),
-            ],
-        )
-    )
-
-    result = create_review_agent(
-        source=source,
-        runner=DeepAgentReviewRunner(subagents=subagents),
-    ).review(repo="acme/widgets", number=42)
-
-    assert isinstance(result, Review)
-    assert source.calls == [{"repo": "acme/widgets", "number": 42}]
-    expected_files = {
-        "/manifest.json",
-        "/diffs/src/auth.py.diff",
-        "/diffs/tests/test_auth.py.diff",
-    }
-    snapshots = []
-    for subagent in subagents.values():
-        assert len(subagent.calls) == 1
-        files = subagent.calls[0]["files"]
-        assert set(files) == expected_files
-        snapshots.append({path: data["content"] for path, data in files.items()})
-    assert snapshots[0] == snapshots[1] == snapshots[2]
-    assert [
-        finding.model_dump(mode="json", exclude_none=True)
-        for finding in result.findings
-    ] == [subagents[lens].finding for lens in Lens]
-
-
-def test_create_deep_review_agent_runs_every_lens_with_structured_output(
-    monkeypatch: pytest.MonkeyPatch,
+def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    snapshot = PullRequestSnapshot(
-        repo="acme/widgets",
-        number=42,
-        head_sha="abc123",
-        files=[
-            SnapshotFile(
-                path="src/caller.py",
-                status="modified",
-                additions=1,
-                deletions=1,
-                patch="@@ -1 +1 @@\n-old\n+new",
-            )
-        ],
-    )
-    source = FakeSnapshotSource(snapshot)
+    checkout = _checkout(tmp_path)
+    source = FakeCheckoutSource(checkout)
     factory_calls: list[dict[str, Any]] = []
-    created_subagents: list[FakeLensSubagent] = []
+    created_agents: list[FakeLensAgent] = []
     findings_by_schema: dict[Any, dict[str, Any]] = {
         review_module.CorrectnessResult: {
             "description": "The caller passes an invalid value.",
@@ -300,62 +147,66 @@ def test_create_deep_review_agent_runs_every_lens_with_structured_output(
         },
     }
 
-    def fake_create_deep_agent(**kwargs: Any) -> FakeLensSubagent:
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
         factory_calls.append(kwargs)
         response_format = kwargs["response_format"]
-        schema = (
-            response_format.schema
-            if isinstance(response_format, ToolStrategy)
-            else response_format
-        )
-        subagent = FakeLensSubagent(findings_by_schema[schema])
-        created_subagents.append(subagent)
-        return subagent
+        schema = response_format.schema
+        agent = FakeLensAgent(findings_by_schema[schema])
+        created_agents.append(agent)
+        return agent
 
     monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
 
-    review = create_deep_review_agent(
+    result = create_deep_review_agent(
         source=source,
         model="openai:gpt-5-mini",
         instructions="Focus on authorization regressions.",
     ).review(repo="acme/widgets", number=42)
 
-    assert isinstance(review, Review)
-    assert source.calls == [{"repo": "acme/widgets", "number": 42}]
+    assert isinstance(result, Review)
     assert len(factory_calls) == 3
-    assert all(
-        isinstance(call["response_format"], ToolStrategy)
-        for call in factory_calls
-    )
     assert [call["response_format"].schema for call in factory_calls] == [
         review_module.CorrectnessResult,
         review_module.SecurityResult,
         review_module.ConventionsAndTestsResult,
     ]
+    assert all(
+        isinstance(call["response_format"], ToolStrategy) for call in factory_calls
+    )
     assert all(call["model"] == "openai:gpt-5-mini" for call in factory_calls)
+    assert all(isinstance(call["backend"], FilesystemBackend) for call in factory_calls)
+    assert all(call["backend"].cwd == tmp_path.resolve() for call in factory_calls)
+    assert all(call["backend"].virtual_mode for call in factory_calls)
     assert all(
-        call["backend"].__class__.__name__ == "StateBackend"
+        [tool.name for tool in call["tools"]] == ["list_changed_files", "get_diff"]
         for call in factory_calls
     )
-    assert all("Plan" in call["system_prompt"] for call in factory_calls)
+    assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
+    assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
+    assert all("list_changed_files" in call["system_prompt"] for call in factory_calls)
     assert all(
-        "Call at most one tool" in call["system_prompt"]
-        and "never call tools in parallel" in call["system_prompt"]
+        "call them in parallel in the same assistant message" in call["system_prompt"]
         for call in factory_calls
     )
     assert all(
-        lens.value in call["system_prompt"]
-        for lens, call in zip(Lens, factory_calls, strict=True)
+        "manifest" not in call["system_prompt"].lower() for call in factory_calls
     )
-    assert all(call.get("tools") is None for call in factory_calls)
-    assert all(call.get("subagents") is None for call in factory_calls)
-    assert all(len(subagent.calls) == 1 for subagent in created_subagents)
+    assert all(set(agent.calls[0]) == {"messages"} for agent in created_agents)
     assert all(
         "Focus on authorization regressions."
-        in subagent.calls[0]["messages"][0]["content"]
-        for subagent in created_subagents
+        in agent.calls[0]["messages"][0]["content"]
+        for agent in created_agents
     )
-    assert [finding.lens for finding in review.findings] == list(Lens)
+    assert [finding.lens for finding in result.findings] == list(Lens)
+
+
+def test_checkout_diff_tool_rejects_parent_traversal(tmp_path: Path) -> None:
+    tools = {
+        tool.name: tool for tool in review_module._checkout_tools(_checkout(tmp_path))
+    }
+
+    with pytest.raises(ValueError, match="stay inside"):
+        tools["get_diff"].invoke({"path": "../secret"})
 
 
 def test_lens_output_schema_rejects_another_lens_identity() -> None:
@@ -375,33 +226,24 @@ def test_lens_output_schema_rejects_another_lens_identity() -> None:
         )
 
 
-def test_review_returns_github_failure_as_explainable_pydantic_data() -> None:
+def test_review_returns_checkout_failure_as_explainable_data() -> None:
     result = create_review_agent(
-        source=FailingSnapshotSource(),
+        source=FailingCheckoutSource(),
         runner=DeterministicReviewRunner(),
     ).review(repo="acme/widgets", number=42)
 
     assert result == ReviewError(
         repo="acme/widgets",
         pull_request_number=42,
-        operation=ReviewOperation.FETCH_SNAPSHOT,
+        operation=ReviewOperation.PREPARE_CHECKOUT,
         error_type="RuntimeError",
-        message="GitHub is unavailable",
+        message="checkout HEAD does not match pull request head",
     )
 
 
-def test_review_returns_model_failure_as_explainable_pydantic_data() -> None:
-    source = FakeSnapshotSource(
-        PullRequestSnapshot(
-            repo="acme/widgets",
-            number=42,
-            head_sha="abc123",
-            files=[],
-        )
-    )
-
+def test_review_returns_model_failure_as_explainable_data(tmp_path: Path) -> None:
     result = create_review_agent(
-        source=source,
+        source=FakeCheckoutSource(_checkout(tmp_path)),
         runner=FailingReviewRunner(),
     ).review(repo="acme/widgets", number=42)
 
@@ -412,77 +254,3 @@ def test_review_returns_model_failure_as_explainable_pydantic_data() -> None:
         error_type="TimeoutError",
         message="model timed out",
     )
-
-
-class DeterministicAllLensRunner:
-    def __init__(self) -> None:
-        self.workspaces: list[ReviewWorkspace] = []
-
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
-        self.workspaces.append(workspace)
-        location = Location(path="src/auth.py", start_line=8, end_line=8)
-        return [
-            Finding(
-                description="The caller no longer supplies the required actor.",
-                location=location,
-                severity=Severity.HIGH,
-                confidence=Confidence.CONFIRMED,
-                lens=Lens.CORRECTNESS,
-            ),
-            Finding(
-                description="The missing actor bypasses the authorization decision.",
-                location=location,
-                severity=Severity.CRITICAL,
-                confidence=Confidence.LIKELY,
-                lens=Lens.SECURITY,
-            ),
-            Finding(
-                description="The authorization regression has no failing test.",
-                location=Location(path="tests/test_auth.py"),
-                severity=Severity.MEDIUM,
-                confidence=Confidence.CONFIRMED,
-                lens=Lens.CONVENTIONS_AND_TESTS,
-            ),
-        ]
-
-
-def test_review_preserves_findings_from_every_lens_without_merging() -> None:
-    source = FakeSnapshotSource(
-        PullRequestSnapshot(
-            repo="acme/widgets",
-            number=42,
-            head_sha="abc123",
-            files=[
-                SnapshotFile(
-                    path="src/auth.py",
-                    status="modified",
-                    additions=1,
-                    deletions=1,
-                    patch="@@ -8 +8 @@\n-authorize(actor)\n+authorize()",
-                ),
-                SnapshotFile(
-                    path="tests/test_auth.py",
-                    status="modified",
-                    additions=1,
-                    deletions=0,
-                    patch="@@ -20,0 +21 @@\n+assert response.ok",
-                ),
-            ],
-        )
-    )
-    runner = DeterministicAllLensRunner()
-
-    result = create_review_agent(source=source, runner=runner).review(
-        repo="acme/widgets", number=42
-    )
-
-    assert isinstance(result, Review)
-    assert source.calls == [{"repo": "acme/widgets", "number": 42}]
-    assert len(runner.workspaces) == 1
-    assert [finding.lens for finding in result.findings] == [
-        Lens.CORRECTNESS,
-        Lens.SECURITY,
-        Lens.CONVENTIONS_AND_TESTS,
-    ]
-    assert result.findings[0].location == result.findings[1].location
-    assert len(result.findings) == 3

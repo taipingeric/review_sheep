@@ -48,11 +48,11 @@ correctness, security, or conventions and tests. Each Lens is reviewed
 independently and contributes Findings to the Review.
 _Avoid_: aspect, dimension, category, pass
 
-**Manifest**:
-The index of a pull request's changed files — path, change status, and line
-counts — written alongside the fetched diffs so a Lens can decide which files to
-read.
-_Avoid_: index, listing, file list, inventory
+**Review Checkout**:
+A clean local Git worktree whose `HEAD` is exactly the pull request's fixed head
+SHA and which contains its base commit. Every Lens reads source and generates
+diffs from this same checkout.
+_Avoid_: snapshot, workspace, manifest, clone
 
 **Inquiry**:
 A question about pull requests answered from GitHub metadata alone, producing no

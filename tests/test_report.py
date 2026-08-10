@@ -3,7 +3,6 @@ from review_sheep import (
     Finding,
     Lens,
     Location,
-    Manifest,
     Report,
     Review,
     Severity,
@@ -12,17 +11,11 @@ from review_sheep import (
 
 
 def _review(findings: list[Finding]) -> Review:
-    manifest = Manifest(
-        repo="acme/widgets",
-        pull_request_number=42,
-        head_sha="abc123",
-        files=[],
-    )
     return Review(
         repo="acme/widgets",
         pull_request_number=42,
+        base_sha="base123",
         head_sha="abc123",
-        manifest=manifest,
         findings=findings,
     )
 
@@ -47,7 +40,9 @@ def test_report_renders_every_location_granularity_in_review_order() -> None:
             ),
             Finding(
                 description=duplicate_description,
-                location=Location(path="tests/test_auth.py", start_line=21, end_line=21),
+                location=Location(
+                    path="tests/test_auth.py", start_line=21, end_line=21
+                ),
                 severity=Severity.MEDIUM,
                 confidence=Confidence.CONFIRMED,
                 lens=Lens.CONVENTIONS_AND_TESTS,
@@ -66,7 +61,9 @@ def test_report_renders_every_location_granularity_in_review_order() -> None:
     report = render_report(review)
 
     assert isinstance(report, Report)
-    assert report.text == """# Review Report: acme/widgets#42
+    assert (
+        report.text
+        == """# Review Report: acme/widgets#42
 
 Head: `abc123`
 Findings: 4
@@ -95,6 +92,7 @@ Findings: 4
 - Confidence: speculative
 - Lens: correctness
 """
+    )
     assert report.text.count(duplicate_description) == 2
     assert review.model_dump() == original
 
@@ -102,10 +100,13 @@ Findings: 4
 def test_empty_review_has_explicit_report_output() -> None:
     report = render_report(_review([]))
 
-    assert report.text == """# Review Report: acme/widgets#42
+    assert (
+        report.text
+        == """# Review Report: acme/widgets#42
 
 Head: `abc123`
 Findings: 0
 
 No Findings.
 """
+    )

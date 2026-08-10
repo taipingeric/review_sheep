@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, cast
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -16,17 +17,16 @@ from review_sheep import (
     InquiryChatState,
     Lens,
     Location,
-    PullRequestSnapshot,
     Review,
-    ReviewWorkspace,
+    ReviewCheckout,
     Severity,
-    SnapshotFile,
     create_chatbot_graph,
     create_inquiry_agent,
     create_intent_classifier,
     create_review_agent,
     render_report,
 )
+from review_sheep.ci import main as ci_main
 
 
 class DeterministicModel(BaseChatModel):
@@ -124,7 +124,7 @@ class UnusedGitHubReader:
         raise AssertionError("the smoke Inquiry must not call GitHub")
 
 
-class DeterministicSnapshotSource:
+class DeterministicCheckoutSource:
     def get_pull_request(self, *, repo: str, number: int) -> dict[str, Any]:
         return {
             "number": number,
@@ -133,26 +133,19 @@ class DeterministicSnapshotSource:
             "html_url": f"https://github.com/{repo}/pull/{number}",
         }
 
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
-        return PullRequestSnapshot(
+    def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
+        return ReviewCheckout(
             repo=repo,
-            number=number,
+            pull_request_number=number,
+            base_sha="base123",
             head_sha="abc123",
-            files=[
-                SnapshotFile(
-                    path="src/example.py",
-                    status="modified",
-                    additions=1,
-                    deletions=1,
-                    patch="@@ -1 +1 @@\n-old\n+new",
-                )
-            ],
+            root=Path.cwd(),
         )
 
 
 class DeterministicReviewRunner:
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
-        assert workspace.read("/diffs/src/example.py.diff")
+    def run(self, checkout: ReviewCheckout) -> list[Finding]:
+        assert checkout.head_sha == "abc123"
         return [
             Finding(
                 description="The changed branch returns the wrong value.",
@@ -165,6 +158,7 @@ class DeterministicReviewRunner:
 
 
 def main() -> None:
+    assert callable(ci_main)
     inquiry_agent = create_inquiry_agent(
         model=DeterministicModel(),
         github=UnusedGitHubReader(),
@@ -175,7 +169,7 @@ def main() -> None:
             model=DeterministicModel(route_intent="review")
         ),
         reviewer=create_review_agent(
-            source=DeterministicSnapshotSource(),
+            source=DeterministicCheckoutSource(),
             runner=DeterministicReviewRunner(),
         ),
     )
@@ -202,7 +196,7 @@ def main() -> None:
     )
 
     result = create_review_agent(
-        source=DeterministicSnapshotSource(),
+        source=DeterministicCheckoutSource(),
         runner=DeterministicReviewRunner(),
     ).review(repo="acme/widgets", number=42)
     assert isinstance(result, Review)

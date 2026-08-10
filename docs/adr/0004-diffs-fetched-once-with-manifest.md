@@ -1,5 +1,7 @@
 # Diffs are fetched once onto the filesystem, with a manifest
 
+Status: superseded by ADR-0007
+
 The Review path fetches the pull request's diffs once, writes one file per
 changed file into the deep agent's filesystem alongside a manifest listing the
 changed paths and their line counts, and lens subagents read from there instead

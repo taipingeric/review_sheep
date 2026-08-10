@@ -1,46 +1,54 @@
-"""The structured Review path."""
+"""The structured Review path over a fixed local Git checkout."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from pathlib import PurePosixPath
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from deepagents import create_deep_agent as _create_deep_agent
-from deepagents.backends import StateBackend
-from deepagents.backends.utils import create_file_data
+from deepagents.backends import FilesystemBackend
+from deepagents.middleware.filesystem import FilesystemPermission
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
+from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 from pydantic import BaseModel, ConfigDict
 
+from review_sheep.checkout import git_changed_files, git_diff
 from review_sheep.domain import (
     Finding,
     Lens,
-    Manifest,
-    ManifestFile,
-    PullRequestSnapshot,
     Review,
+    ReviewCheckout,
     ReviewError,
     ReviewOperation,
-    ReviewWorkspace,
 )
 
-_SERIAL_TOOL_USE_PROMPT = (
-    "Call at most one tool in each assistant message; never call tools in parallel. "
+_PARALLEL_TOOL_USE_PROMPT = (
+    "When multiple independent tool calls are needed, call them in parallel in the "
+    "same assistant message. Keep dependent tool calls sequential. "
+)
+
+_CHECKOUT_PROMPT = (
+    "The repository is a clean local worktree fixed at the pull request head SHA. "
+    "Start by calling list_changed_files, then call get_diff for relevant changed "
+    "paths. Use read_file, grep, and glob to inspect complete files and trace "
+    "unchanged callers, callees, tests, and configuration. Treat the worktree as "
+    "read-only; never call write_file, edit_file, or delete_file. "
 )
 
 
-class SnapshotSource(Protocol):
-    """Fetch one stable pull-request snapshot."""
+class ReviewCheckoutSource(Protocol):
+    """Prepare one verified local checkout for a pull request."""
 
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot: ...
+    def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout: ...
 
 
 class ReviewRunner(Protocol):
-    """Review one prepared workspace through every configured Lens."""
+    """Review one fixed checkout through every configured Lens."""
 
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]: ...
+    def run(self, checkout: ReviewCheckout) -> list[Finding]: ...
 
 
 class _ReviewGraphState(TypedDict):
@@ -48,8 +56,7 @@ class _ReviewGraphState(TypedDict):
 
     repo: str
     pull_request_number: int
-    snapshot: NotRequired[PullRequestSnapshot]
-    workspace: NotRequired[ReviewWorkspace]
+    checkout: NotRequired[ReviewCheckout]
     result: NotRequired[Review | ReviewError]
 
 
@@ -104,22 +111,19 @@ _LENS_RESULT_SCHEMAS: dict[Lens, type[BaseModel]] = {
 _LENS_SYSTEM_PROMPTS = {
     Lens.CORRECTNESS: (
         "Plan the Review, then inspect the whole pull request through the "
-        "correctness Lens, not one file in isolation. Start with /manifest.json, "
-        "inspect every relevant diff under /diffs, trace changed contracts across "
-        "callers and callees, and report only actionable defects. Every output "
-        "item must use the correctness lens."
+        "correctness Lens, not one file in isolation. Trace changed contracts "
+        "across callers and callees, and report only actionable defects. Every "
+        "output item must use the correctness lens."
     ),
     Lens.SECURITY: (
         "Plan the Review, then inspect the whole pull request through the security "
-        "Lens. Start with /manifest.json, inspect every relevant diff under /diffs, "
-        "and trace data, identity, authorization, and trust boundaries across files. "
-        "Report only actionable security defects. Every output item must use the "
-        "security lens."
+        "Lens. Trace data, identity, authorization, and trust boundaries across "
+        "files. Report only actionable security defects. Every output item must "
+        "use the security lens."
     ),
     Lens.CONVENTIONS_AND_TESTS: (
         "Plan the Review, then inspect the whole pull request through the "
-        "conventions-and-tests Lens. Start with /manifest.json, inspect every "
-        "relevant diff under /diffs, and compare related implementation and tests "
+        "conventions-and-tests Lens. Compare related implementation and tests "
         "across files. Report only actionable convention or test defects. Every "
         "output item must use the conventions-and-tests lens."
     ),
@@ -127,51 +131,77 @@ _LENS_SYSTEM_PROMPTS = {
 
 
 class DeepAgentReviewRunner:
-    """Run one independent deep subagent per Lens over the same workspace."""
+    """Run one independent deep agent per Lens over the same fixed checkout."""
 
     def __init__(
-        self, *, subagents: Mapping[Lens, Any], instructions: str = ""
+        self,
+        *,
+        model: str | BaseChatModel,
+        instructions: str = "",
     ) -> None:
-        configured = set(subagents)
-        required = set(Lens)
-        if configured != required:
-            missing = ", ".join(sorted(lens.value for lens in required - configured))
-            extra = ", ".join(sorted(lens.value for lens in configured - required))
-            raise ValueError(
-                f"DeepAgentReviewRunner requires every Lens; missing={missing!r}, "
-                f"extra={extra!r}"
-            )
-        self._subagents = dict(subagents)
+        self._model = model
         self._instructions = instructions.strip()
 
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
-        """Validate and concatenate raw Lens Findings in stable Lens order."""
+    def run(self, checkout: ReviewCheckout) -> list[Finding]:
+        """Run and concatenate Lens Findings in stable Lens order."""
         findings: list[Finding] = []
         for lens in Lens:
-            findings.extend(self._run_lens(lens, workspace))
+            findings.extend(self._run_lens(lens, checkout))
         return findings
 
-    def _run_lens(self, lens: Lens, workspace: ReviewWorkspace) -> list[Finding]:
+    def _run_lens(self, lens: Lens, checkout: ReviewCheckout) -> list[Finding]:
+        agent = _create_deep_agent(
+            model=self._model,
+            tools=_checkout_tools(checkout),
+            backend=FilesystemBackend(root_dir=checkout.root, virtual_mode=True),
+            permissions=[
+                FilesystemPermission(
+                    operations=["write"],
+                    paths=["/**"],
+                    mode="deny",
+                )
+            ],
+            response_format=ToolStrategy(_LENS_RESULT_SCHEMAS[lens]),
+            system_prompt=(
+                _PARALLEL_TOOL_USE_PROMPT
+                + _CHECKOUT_PROMPT
+                + _LENS_SYSTEM_PROMPTS[lens]
+            ),
+        )
         request = (
-            "Review the pull request snapshot in /manifest.json and its diff files "
-            f"through the {lens.value} Lens."
+            f"Review {checkout.repo}#{checkout.pull_request_number} from "
+            f"{checkout.base_sha}...{checkout.head_sha} through the "
+            f"{lens.value} Lens."
         )
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
-        state = {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": request,
-                }
-            ],
-            "files": {
-                path: create_file_data(content)
-                for path, content in workspace.files.items()
-            },
-        }
-        result = self._subagents[lens].invoke(state)
+        result = agent.invoke({"messages": [{"role": "user", "content": request}]})
         return _validate_lens_findings(lens, result["structured_response"])
+
+
+def _checkout_tools(checkout: ReviewCheckout) -> list[BaseTool]:
+    @tool
+    def list_changed_files() -> str:
+        """List PR-changed paths and Git status from base SHA to head SHA."""
+        return git_changed_files(checkout) or "No changed files."
+
+    @tool
+    def get_diff(path: str = "") -> str:
+        """Read the PR diff; optionally pass one repository-relative changed path."""
+        normalized = _normalize_repo_path(path)
+        return git_diff(checkout, path=normalized) or "No diff for that path."
+
+    return [list_changed_files, get_diff]
+
+
+def _normalize_repo_path(path: str) -> str:
+    normalized = path.strip().replace("\\", "/").lstrip("/")
+    if not normalized:
+        return ""
+    parts = PurePosixPath(normalized).parts
+    if ".." in parts:
+        raise ValueError("diff path must stay inside the review checkout")
+    return str(PurePosixPath(*parts))
 
 
 def _validate_lens_findings(lens: Lens, payload: Any) -> list[Finding]:
@@ -188,11 +218,11 @@ def _validate_lens_findings(lens: Lens, payload: Any) -> list[Finding]:
 class ReviewAgent:
     """Run the Review LangGraph behind one stable public interface."""
 
-    def __init__(self, *, source: SnapshotSource, runner: ReviewRunner) -> None:
+    def __init__(self, *, source: ReviewCheckoutSource, runner: ReviewRunner) -> None:
         self._graph = _create_review_graph(source=source, runner=runner)
 
     def review(self, *, repo: str, number: int) -> Review | ReviewError:
-        """Run one structured Review without writing to GitHub."""
+        """Run one structured Review without writing to GitHub or the checkout."""
         state = cast(
             _ReviewGraphState,
             self._graph.invoke(
@@ -203,18 +233,18 @@ class ReviewAgent:
 
 
 def _create_review_graph(
-    *, source: SnapshotSource, runner: ReviewRunner
+    *, source: ReviewCheckoutSource, runner: ReviewRunner
 ) -> CompiledStateGraph[
     _ReviewGraphState,
     None,
     _ReviewGraphState,
     _ReviewGraphState,
 ]:
-    """Compile snapshot, workspace, and Lens execution into one LangGraph."""
+    """Compile checkout validation and Lens execution into one LangGraph."""
 
-    def fetch_snapshot(state: _ReviewGraphState) -> dict[str, object]:
+    def prepare_checkout(state: _ReviewGraphState) -> dict[str, object]:
         try:
-            snapshot = source.fetch_snapshot(
+            checkout = source.prepare_checkout(
                 repo=state["repo"],
                 number=state["pull_request_number"],
             )
@@ -222,28 +252,15 @@ def _create_review_graph(
             return {
                 "result": _review_error(
                     state=state,
-                    operation=ReviewOperation.FETCH_SNAPSHOT,
+                    operation=ReviewOperation.PREPARE_CHECKOUT,
                     error=error,
                 )
             }
-        return {"snapshot": snapshot}
-
-    def prepare_workspace(state: _ReviewGraphState) -> dict[str, object]:
-        try:
-            workspace = _build_workspace(state["snapshot"])
-        except Exception as error:  # noqa: BLE001 - failures are public data here
-            return {
-                "result": _review_error(
-                    state=state,
-                    operation=ReviewOperation.PREPARE_WORKSPACE,
-                    error=error,
-                )
-            }
-        return {"workspace": workspace}
+        return {"checkout": checkout}
 
     def run_review(state: _ReviewGraphState) -> dict[str, object]:
         try:
-            findings = runner.run(state["workspace"])
+            findings = runner.run(state["checkout"])
         except Exception as error:  # noqa: BLE001 - failures are public data here
             return {
                 "result": _review_error(
@@ -252,14 +269,13 @@ def _create_review_graph(
                     error=error,
                 )
             }
-        snapshot = state["snapshot"]
-        workspace = state["workspace"]
+        checkout = state["checkout"]
         return {
             "result": Review(
-                repo=snapshot.repo,
-                pull_request_number=snapshot.number,
-                head_sha=snapshot.head_sha,
-                manifest=workspace.manifest,
+                repo=checkout.repo,
+                pull_request_number=checkout.pull_request_number,
+                base_sha=checkout.base_sha,
+                head_sha=checkout.head_sha,
                 findings=findings,
             )
         }
@@ -268,17 +284,11 @@ def _create_review_graph(
         return "stop" if "result" in state else "continue"
 
     graph = StateGraph(_ReviewGraphState)
-    graph.add_node("fetch_snapshot", fetch_snapshot)
-    graph.add_node("prepare_workspace", prepare_workspace)
+    graph.add_node("prepare_checkout", prepare_checkout)
     graph.add_node("run_review", run_review)
-    graph.add_edge(START, "fetch_snapshot")
+    graph.add_edge(START, "prepare_checkout")
     graph.add_conditional_edges(
-        "fetch_snapshot",
-        route,
-        {"continue": "prepare_workspace", "stop": END},
-    )
-    graph.add_conditional_edges(
-        "prepare_workspace",
+        "prepare_checkout",
         route,
         {"continue": "run_review", "stop": END},
     )
@@ -298,37 +308,8 @@ def _review_error(
     )
 
 
-def _build_workspace(snapshot: PullRequestSnapshot) -> ReviewWorkspace:
-    manifest_files = [
-        ManifestFile(
-            path=file.path,
-            status=file.status,
-            additions=file.additions,
-            deletions=file.deletions,
-            changes=file.additions + file.deletions,
-            diff_path=f"/diffs/{file.path}.diff",
-            previous_path=file.previous_path,
-        )
-        for file in snapshot.files
-    ]
-    manifest = Manifest(
-        repo=snapshot.repo,
-        pull_request_number=snapshot.number,
-        head_sha=snapshot.head_sha,
-        files=manifest_files,
-    )
-    files = {
-        entry.diff_path: snapshot_file.patch
-        for entry, snapshot_file in zip(
-            manifest_files, snapshot.files, strict=True
-        )
-    }
-    files["/manifest.json"] = manifest.model_dump_json(indent=2)
-    return ReviewWorkspace(manifest=manifest, files=files)
-
-
 def create_review_agent(
-    *, source: SnapshotSource, runner: ReviewRunner
+    *, source: ReviewCheckoutSource, runner: ReviewRunner
 ) -> ReviewAgent:
     """Create the Review module from explicit adapters."""
     return ReviewAgent(source=source, runner=runner)
@@ -336,24 +317,12 @@ def create_review_agent(
 
 def create_deep_review_agent(
     *,
-    source: SnapshotSource,
+    source: ReviewCheckoutSource,
     model: str | BaseChatModel,
     instructions: str = "",
 ) -> ReviewAgent:
-    """Create the production Review workflow with one subagent per Lens."""
-    subagents = {
-        lens: _create_deep_agent(
-            model=model,
-            backend=StateBackend(),
-            response_format=ToolStrategy(_LENS_RESULT_SCHEMAS[lens]),
-            system_prompt=_SERIAL_TOOL_USE_PROMPT + _LENS_SYSTEM_PROMPTS[lens],
-        )
-        for lens in Lens
-    }
+    """Create the production Review workflow with one deep agent per Lens."""
     return create_review_agent(
         source=source,
-        runner=DeepAgentReviewRunner(
-            subagents=subagents,
-            instructions=instructions,
-        ),
+        runner=DeepAgentReviewRunner(model=model, instructions=instructions),
     )

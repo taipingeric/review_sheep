@@ -4,11 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from review_sheep.domain import PullRequestSnapshot, SnapshotFile
+from review_sheep.domain import PullRequestRevision
 
 
 class GitHubPullRequestReader:
-    """Adapt PyGithub to metadata reads and stable Review snapshots."""
+    """Adapt PyGithub to metadata reads and pull-request revisions."""
 
     def __init__(self, *, client: Any, default_repo: str = "") -> None:
         self._client = client
@@ -114,32 +114,15 @@ class GitHubPullRequestReader:
             "reviews": reviews,
         }
 
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
-        """Fetch one pull request's head and changed-code snapshot."""
+    def get_pull_request_revision(
+        self, *, repo: str, number: int
+    ) -> PullRequestRevision:
+        """Read the immutable base and head commits expected by Review."""
         target = self._repo(repo)
-        repository = self._client.get_repo(target)
-        pull = repository.get_pull(number)
-        head_sha = pull.head.sha
-        changed_files = list(pull.get_files())
-        current_head_sha = repository.get_pull(number).head.sha
-        if current_head_sha != head_sha:
-            raise RuntimeError(
-                "pull request head changed while fetching snapshot; retry the Review"
-            )
-        files = [
-            SnapshotFile(
-                path=changed.filename,
-                status=changed.status,
-                additions=changed.additions,
-                deletions=changed.deletions,
-                patch=changed.patch or "",
-                previous_path=changed.previous_filename,
-            )
-            for changed in changed_files
-        ]
-        return PullRequestSnapshot(
+        pull = self._client.get_repo(target).get_pull(number)
+        return PullRequestRevision(
             repo=target,
             number=number,
-            head_sha=head_sha,
-            files=files,
+            base_sha=pull.base.sha,
+            head_sha=pull.head.sha,
         )

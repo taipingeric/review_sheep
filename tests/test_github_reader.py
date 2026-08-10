@@ -3,10 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-import pytest
 from pydantic import BaseModel
 
-from review_sheep import GitHubPullRequestReader, PullRequestSnapshot, SnapshotFile
+from review_sheep import GitHubPullRequestReader, PullRequestRevision
 
 
 class FakeUser(BaseModel):
@@ -41,16 +40,6 @@ class FakeRepository:
         assert self.pull_details is not None
         assert number == self.pull_details.number
         return self.pull_details
-
-
-class ChangingHeadRepository(FakeRepository):
-    def __init__(self, pulls: list[Any]) -> None:
-        super().__init__([])
-        self.pull_sequence = pulls
-
-    def get_pull(self, number: int) -> Any:
-        self.requested_pulls.append(number)
-        return self.pull_sequence[len(self.requested_pulls) - 1]
 
 
 class FakeGithubClient:
@@ -222,97 +211,22 @@ def test_reader_returns_each_reviewers_effective_review_state() -> None:
     }
 
 
-def test_reader_fetches_one_stable_pull_request_snapshot() -> None:
-    file_requests = 0
-
-    def get_files() -> list[Any]:
-        nonlocal file_requests
-        file_requests += 1
-        return changed_files
-
-    changed_files = [
-        SimpleNamespace(
-            filename="src/caller.py",
-            status="modified",
-            additions=1,
-            deletions=1,
-            patch="@@ -12 +12 @@\n-old\n+new",
-            previous_filename=None,
-        ),
-        SimpleNamespace(
-            filename="src/new_name.py",
-            status="renamed",
-            additions=2,
-            deletions=0,
-            patch="@@ -0,0 +1,2 @@\n+one\n+two",
-            previous_filename="src/old_name.py",
-        ),
-    ]
+def test_reader_returns_pull_request_base_and_head_revisions() -> None:
     pull = SimpleNamespace(
         number=42,
+        base=SimpleNamespace(sha="base123"),
         head=SimpleNamespace(sha="abc123"),
-        get_files=get_files,
     )
     repository = FakeRepository([], pull_details=pull)
     client = FakeGithubClient(repository)
     reader = GitHubPullRequestReader(client=client, default_repo="acme/widgets")
 
-    snapshot = reader.fetch_snapshot(repo="", number=42)
+    revision = reader.get_pull_request_revision(repo="", number=42)
 
-    assert repository.requested_pulls == [42, 42]
-    assert file_requests == 1
-    assert snapshot == PullRequestSnapshot(
+    assert repository.requested_pulls == [42]
+    assert revision == PullRequestRevision(
         repo="acme/widgets",
         number=42,
+        base_sha="base123",
         head_sha="abc123",
-        files=[
-            SnapshotFile(
-                path="src/caller.py",
-                status="modified",
-                additions=1,
-                deletions=1,
-                patch="@@ -12 +12 @@\n-old\n+new",
-            ),
-            SnapshotFile(
-                path="src/new_name.py",
-                status="renamed",
-                additions=2,
-                deletions=0,
-                patch="@@ -0,0 +1,2 @@\n+one\n+two",
-                previous_path="src/old_name.py",
-            ),
-        ],
     )
-
-
-def test_reader_rejects_a_snapshot_when_head_changes_during_diff_fetch() -> None:
-    file_requests = 0
-
-    def get_files() -> list[Any]:
-        nonlocal file_requests
-        file_requests += 1
-        return []
-
-    first = SimpleNamespace(
-        number=42,
-        head=SimpleNamespace(sha="old-sha"),
-        get_files=get_files,
-    )
-    second = SimpleNamespace(
-        number=42,
-        head=SimpleNamespace(sha="new-sha"),
-    )
-    repository = ChangingHeadRepository([first, second])
-    reader = GitHubPullRequestReader(
-        client=FakeGithubClient(repository),
-        default_repo="acme/widgets",
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match="pull request head changed while fetching snapshot; retry the Review",
-    ):
-        reader.fetch_snapshot(repo="", number=42)
-
-    assert repository.requested_pulls == [42, 42]
-    assert file_requests == 1

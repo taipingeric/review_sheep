@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any, cast
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -15,9 +16,8 @@ from review_sheep import (
     InquiryAnswer,
     InquiryChatState,
     IntentDecision,
-    PullRequestSnapshot,
     Review,
-    ReviewWorkspace,
+    ReviewCheckout,
     create_chatbot_graph,
     create_inquiry_agent,
     create_review_agent,
@@ -106,18 +106,19 @@ class ScriptedIntentClassifier:
         return next(self.decisions)
 
 
-class EmptySnapshotSource:
-    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
-        return PullRequestSnapshot(
+class EmptyCheckoutSource:
+    def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
+        return ReviewCheckout(
             repo=repo,
-            number=number,
+            pull_request_number=number,
+            base_sha="base123",
             head_sha="abc123",
-            files=[],
+            root=Path.cwd(),
         )
 
 
 class EmptyReviewRunner:
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
+    def run(self, checkout: ReviewCheckout) -> list[Finding]:
         return []
 
 
@@ -219,7 +220,7 @@ def test_chatbot_graph_routes_changed_code_intent_to_review_bot() -> None:
         github=FakePullRequestReader(),
     )
     reviewer = create_review_agent(
-        source=EmptySnapshotSource(),
+        source=EmptyCheckoutSource(),
         runner=EmptyReviewRunner(),
     )
     chatbot = create_chatbot_graph(
@@ -308,7 +309,7 @@ def test_chatbot_graph_routes_identity_questions_to_inquiry_agent() -> None:
 
 def test_review_route_collects_missing_context_across_turns() -> None:
     reviewer = create_review_agent(
-        source=EmptySnapshotSource(),
+        source=EmptyCheckoutSource(),
         runner=EmptyReviewRunner(),
     )
     chatbot = create_chatbot_graph(

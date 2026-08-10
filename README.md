@@ -4,8 +4,9 @@ Review Sheep is a Python library for reading GitHub pull requests through two
 separate capabilities:
 
 - **Inquiry** answers lightweight questions from pull-request metadata.
-- **Review** fetches one stable changed-code snapshot, asks whole-pull-request
-  Lens subagents to inspect it, and returns structured Pydantic Findings.
+- **Review** reads a complete local Git checkout pinned to a pull-request head
+  SHA, asks whole-pull-request Lens agents to inspect it, and returns structured
+  Pydantic Findings.
 
 Review Sheep is read-only. It never submits reviews, posts comments, changes
 labels, or otherwise writes Findings back to GitHub. Publishing a rendered
@@ -69,15 +70,18 @@ from langchain_core.messages import HumanMessage
 
 from review_sheep import (
     ChatState,
+    GitCheckoutSource,
     create_chatbot_graph,
     create_deep_review_agent,
     create_intent_classifier,
 )
 
+checkout = GitCheckoutSource(revisions=github, root="/work/pr-42")
+
 chatbot = create_chatbot_graph(
     agent=inquiry_agent,
     classifier=create_intent_classifier(model=model),
-    reviewer=create_deep_review_agent(source=github, model=model),
+    reviewer=create_deep_review_agent(source=checkout, model=model),
 )
 state = ChatState(messages=[])
 state = chatbot.invoke(state)
@@ -98,11 +102,13 @@ not invoke either agent and returns only the chatbot's supported scope.
 
 ## Review and Report
 
-Review runs a LangGraph workflow that reads changed-file metadata and diffs
-once, prepares a shared workspace, and invokes the Lens agents. Correctness,
-security, and conventions-and-tests deep agents inspect the same in-memory
-Manifest and diff snapshot. Findings retain their Location, Severity,
-Confidence, and originating Lens; overlapping Findings are not merged.
+Review runs a LangGraph workflow that verifies one clean local checkout against
+GitHub's PR base/head SHAs and invokes the Lens agents. Correctness, security,
+and conventions-and-tests agents share that fixed checkout. They generate the
+changed-file index and diffs from `git diff base...head`, then read complete
+source files directly. No `manifest.json` is generated. Findings retain their
+Location, Severity, Confidence, and originating Lens; overlapping Findings are
+not merged.
 
 ```python
 from review_sheep import (
@@ -111,7 +117,7 @@ from review_sheep import (
     render_report,
 )
 
-reviewer = create_deep_review_agent(source=github, model=model)
+reviewer = create_deep_review_agent(source=checkout, model=model)
 result = reviewer.review(repo="acme/widgets", number=42)
 
 if isinstance(result, Review):
@@ -136,12 +142,13 @@ uv sync --extra openai --extra dev
 ```
 
 The interactive script reads `GITHUB_TOKEN`, `OPENAI_MODEL`, `OPENAI_API_KEY`,
-and optional `BASE_URL` from `.env`:
+and optional `BASE_URL` and `REVIEW_CHECKOUT` from `.env`:
 
 ```dotenv
 GITHUB_TOKEN=your-read-only-github-token
 OPENAI_MODEL=gpt-5-mini
 OPENAI_API_KEY=your-openai-api-key
+REVIEW_CHECKOUT=/absolute/path/to/a/clean/pr-checkout
 # BASE_URL=https://your-compatible-endpoint/v1
 ```
 
@@ -167,5 +174,54 @@ You: quit
 ```
 
 The GitHub token must be able to read the target repository; private
-repositories require corresponding read access. Both routes are read-only and
-never post reviews, comments, or Findings to GitHub.
+repositories require corresponding read access. Before a changed-code Review,
+the configured checkout must have the PR head SHA at `HEAD`, contain the PR base
+commit, and have no tracked or untracked changes. CI can prepare that checkout
+before starting the agent. Both routes are read-only and never post reviews,
+comments, or Findings to GitHub.
+
+## GitHub Actions PR Review
+
+The repository provides a reusable workflow that downloads Review Sheep into a
+directory separate from the PR checkout, installs it with `uv`, and calls the
+non-interactive `scripts/review_pr.py`. The Markdown Report is printed in the
+job log and appended to the GitHub Actions step summary; it is not posted to the
+pull request.
+
+Add an `OPENAI_API_KEY` repository secret to the repository being reviewed, then
+create `.github/workflows/review-sheep.yml` there:
+
+```yaml
+name: Review Sheep
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  review:
+    # pull_request does not expose repository secrets to fork PRs.
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: taipingeric/review_sheep/.github/workflows/review-pr.yml@REVIEW_SHEEP_SHA
+    with:
+      # Use the same full commit SHA as the reusable workflow reference above.
+      review_sheep_ref: REVIEW_SHEEP_SHA
+      model: gpt-5-mini
+      # base_url: https://your-compatible-endpoint/v1
+      # instructions: Focus on authorization and data integrity.
+    secrets:
+      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+```
+
+Replace both `REVIEW_SHEEP_SHA` placeholders with the same full Review Sheep
+commit SHA. Pinning prevents workflow code and the downloaded Python package
+from drifting independently. Do not change this workflow to
+`pull_request_target` and then execute untrusted PR code with model secrets.
+
+The reusable workflow checks out the exact PR head with full Git history, so
+`GitCheckoutSource` can verify the head SHA and resolve the base commit before
+any Lens runs.

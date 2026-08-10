@@ -1,329 +1,269 @@
 # Review Sheep Architecture
 
 Review Sheep is a read-only Python library for understanding and reviewing
-GitHub pull requests. Its runtime architecture is based on two agent
-frameworks:
-
-- **LangChain agents** provide model invocation, tool calling, messages, and
-  structured output.
-- **LangGraph** provides stateful conversation and Review workflow
-  orchestration. The `deepagents` Review workers are also LangGraph agents
-  built on LangChain primitives.
-
-Pydantic domain models, the GitHub adapter, and Report rendering remain outside
-the agent runtime. They form stable seams around nondeterministic model
-behaviour.
+GitHub pull requests. LangChain provides agents, tool calling, messages, and
+structured output; LangGraph provides the chatbot and Review workflows. Frozen
+Pydantic models form the trusted boundary around model output.
 
 ## Architectural shape
 
-The project exposes two capabilities with different cost and data access:
+The project exposes two capabilities:
 
 1. **Inquiry** answers conversational questions from pull-request metadata.
-2. **Review** inspects a stable changed-code snapshot through three independent
-   Review Lenses and returns structured Findings.
+2. **Review** inspects a complete local Git checkout pinned to the pull
+   request's head SHA through three independent Review Lenses.
 
 ```mermaid
 flowchart LR
     Caller[Library caller or CLI]
-    Chat[LangGraph chatbot<br/>IntentClassifier route]
+    Chat[LangGraph chatbot<br/>intent route]
     Inquiry[LangChain Inquiry agent]
-    Tools[LangChain GitHub tools]
-    GitHub[GitHub adapter<br/>PyGithub]
-    Review[Review LangGraph<br/>fetch → prepare → run]
-    Workspace[Manifest + virtual diff files]
-    Lenses[Three deepagents<br/>LangGraph agents]
-    Models[Pydantic domain models]
+    GitHub[GitHubPullRequestReader]
+    Review[Review LangGraph]
+    Checkout[GitCheckoutSource<br/>fixed SHA worktree]
+    Lenses[Three deepagents]
+    GitTools[list_changed_files<br/>get_diff]
+    Files[Read-only worktree tools]
+    Models[Frozen Pydantic models]
     Report[Pure Report renderer]
 
     Caller --> Chat
     Chat --> Inquiry
     Chat --> Review
-    Inquiry --> Tools
-    Tools --> GitHub
-
-    Caller --> Review
-    Review --> GitHub
-    Review --> Workspace
-    Workspace --> Lenses
+    Inquiry --> GitHub
+    Review --> Checkout
+    Checkout --> GitHub
+    Review --> Lenses
+    Lenses --> GitTools
+    Lenses --> Files
     Lenses --> Models
     Review --> Models
     Models --> Report
 ```
 
-The two paths share the outer routing graph, GitHub adapter, and model
-abstractions, but they do not share an agent prompt or worker graph. Metadata
-questions should not pay the cost of fetching diffs, and code Review must not
-rely on metadata-only tools.
+Inquiry and Review share routing, the GitHub adapter, and model abstractions,
+but not prompts or tools. Metadata questions do not need a checkout; Review
+does not depend on incomplete patches returned by the GitHub files API.
 
 ## Framework responsibilities
 
-### LangChain: agent and tool runtime
+### LangChain
 
-LangChain owns the model-facing interfaces:
-
-- `langchain.agents.create_agent` creates the Inquiry agent.
-- `langchain.tools.tool` exposes three read-only GitHub metadata operations.
-- `BaseMessage`, `HumanMessage`, `AIMessage`, and `ToolMessage` represent
-  conversation history.
+- `langchain.agents.create_agent` creates the Inquiry agent and intent
+  classifier.
+- LangChain tools expose three read-only GitHub metadata operations and two
+  read-only Git operations.
 - `BaseChatModel` is the injected model seam.
-- `ToolStrategy` binds each Review Lens to a Pydantic structured-output model.
+- `ToolStrategy` validates each Lens against a Pydantic result type.
 
-Provider-specific clients are caller-owned. The library accepts either a model
-name or a `BaseChatModel`; only the CLI constructs `ChatOpenAI`.
+### LangGraph
 
-### LangGraph: orchestration and state
-
-The conversational interface is a compiled `StateGraph` with an explicit
-intent route:
+The conversational graph routes each turn:
 
 ```text
 START -> IntentClassifier
-            |-- inquiry --> Bot ------> END
-            |-- review  --> ReviewBot -> END
+            |-- inquiry --> Bot ----------> END
+            |-- review  --> ReviewBot ----> END
             +-- unrelated --> UnrelatedBot -> END
 ```
 
-`ChatState` extends `MessagesState` and adds the latest Pydantic
-`IntentDecision`, structured `InquiryAnswer`, or structured `Review`. The
-legacy `InquiryChatState` name remains as a compatible state type. Each graph
-invocation is one turn. Conversation history is passed back into the next
-invocation by the caller or CLI; the graph currently has no checkpointer or
-persistent store.
+`ChatState` extends `MessagesState` with an `IntentDecision`, `InquiryAnswer`,
+or `Review`. The caller passes returned conversation history into the next
+invocation; there is currently no persistent checkpointer.
 
-`IntentClassifier` is a LangChain agent with a Pydantic structured-output
-contract. Metadata, greeting, and Review Sheep identity requests route to `Bot`,
-while changed-code requests route to `ReviewBot`. Messages outside both
-supported capabilities route to
-`UnrelatedBot`, which invokes neither agent. The Review route retains an
-explicitly extracted `owner/repo` and pull-request number across turns, asking
-for whichever value is still missing.
+Review uses a separate graph hidden behind `ReviewAgent.review`:
 
-The graph interface remains deep: callers supply the agents and messages, while
-the graph handles classification, conditional routing, context collection,
-error presentation, message accumulation, and structured result retention.
-
-The Review Lenses are created with `deepagents.create_deep_agent`. Each worker
-is a LangGraph agent with a `StateBackend`, filesystem tools, a Lens-specific
-system prompt, and a LangChain `ToolStrategy` output contract.
-
-Review itself is a separate compiled `StateGraph` hidden behind
-`ReviewAgent.review`:
-
-```text
-START -> fetch_snapshot -> prepare_workspace -> run_review -> END
-             |                    |
-             +------ error -------+--------------------------> END
+```mermaid
+flowchart LR
+    Start([START]) --> Prepare[prepare_checkout]
+    Prepare -->|verified| Run[run_review]
+    Prepare -->|ReviewError| End([END])
+    Run --> End
 ```
 
-Each node owns one failure operation and writes either the next validated state
-value or a final `ReviewError`. Conditional edges stop the workflow immediately
-after a failed stage.
+`prepare_checkout` resolves the pull request's base and head SHA and verifies
+the local Git worktree. `run_review` invokes every Lens and returns either a
+structured `Review` or a `ReviewError`.
 
 ## Module map
 
-| Module | Public interface | Responsibility |
-| --- | --- | --- |
-| `chat_graph.py` | `create_chatbot_graph`, `ChatState` | Classify each turn and route it to the Inquiry, Review, or unrelated Bot while retaining structured state. |
-| `intent.py` | `create_intent_classifier`, `IntentClassifier` | Build the LangChain structured-output agent that chooses the graph route. |
-| `inquiry.py` | `create_inquiry_agent`, `InquiryAgent.ask`, `InquiryAgent.invoke` | Build and run the metadata-only LangChain agent. |
-| `review.py` | `create_deep_review_agent`, `ReviewAgent.review` | Compile and run the Review LangGraph, including snapshot preparation and every Lens. |
-| `github.py` | `GitHubPullRequestReader` | Adapt PyGithub to both metadata reads and stable changed-code snapshots. |
-| `domain.py` | Frozen Pydantic models | Define the data contracts for snapshots, manifests, Findings, Reviews, and failures. |
-| `report.py` | `render_report` | Render a human-facing Report from a structured Review without changing it. |
-| `chat.py` | `main` | Construct production adapters from `.env` and run the continuous CLI loop. |
+| Module | Responsibility |
+| --- | --- |
+| `chat_graph.py` | Route each turn to Inquiry, Review, or the unrelated response. |
+| `intent.py` | Build the structured-output intent agent. |
+| `inquiry.py` | Build and run the metadata-only LangChain agent. |
+| `checkout.py` | Validate a fixed Git checkout and provide read-only diff operations. |
+| `review.py` | Compile the Review LangGraph and run the deep Lens agents. |
+| `github.py` | Adapt PyGithub to metadata reads and pull-request revision lookup. |
+| `domain.py` | Define frozen public data contracts. |
+| `report.py` | Render a human-facing Report without changing the Review. |
+| `providers.py` | Construct shared GitHub and model-provider clients. |
+| `chat.py` | Assemble production adapters and run the CLI. |
+| `ci.py` | Run one non-interactive Review with CI-safe output and exit codes. |
 
 ## Inquiry path
 
-Inquiry is optimized for low-cost, metadata-only questions such as “which pull
-requests are waiting for review?” or “who approved PR 42?”.
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant Router as IntentClassifier
-    participant Graph as Inquiry Bot
-    participant Agent as LangChain Inquiry agent
-    participant Tool as GitHub tool
-    participant GitHub as GitHubPullRequestReader
-
-    User->>Router: conversation messages
-    Router-->>Graph: inquiry IntentDecision
-    Graph->>Agent: InquiryAgent.invoke(messages)
-    Agent->>Tool: choose metadata operation
-    Tool->>GitHub: read repository / PR / reviews
-    GitHub-->>Tool: JSON-compatible metadata
-    Tool-->>Agent: JSON string
-    Agent-->>Graph: natural-language answer
-    Graph-->>User: AIMessage + InquiryAnswer
-```
-
-The agent can call:
+Inquiry can call:
 
 - `list_pull_requests`
 - `get_pull_request`
 - `get_pull_request_reviews`
 
-Tool failures are converted to JSON error data so the agent can explain them
-without crashing the graph. `InquiryAgent` converts invocation failures or an
-empty model response into `InquiryAnswer(error=...)`. If a list tool reports
-`truncated=true`, the structured answer records `incomplete=True`.
+Tool failures become JSON error data so the agent can explain them. The system
+prompt identifies Review Sheep, allows a tool-free self-introduction, prohibits
+invented changed-code Findings, and asks the agent to answer in the user's
+language.
 
-The system prompt identifies the agent as Review Sheep and lets it introduce its
-read-only Inquiry and Review capabilities without calling tools. For metadata it
-must use returned data only, include PR numbers and URLs, disclose truncation,
-avoid inventing changed-code Findings, and answer in the user's language.
+## Review checkout
 
-## Review path
+`GitHubPullRequestReader.get_pull_request_revision` returns only the PR's
+`base_sha` and `head_sha`. `GitCheckoutSource` then verifies that:
 
-Review is a deterministic LangGraph around nondeterministic Lens agents:
+- the configured path belongs to a Git worktree;
+- `HEAD` exactly equals the PR head SHA;
+- the PR base commit exists locally; and
+- tracked and untracked worktree state is clean.
+
+The resulting `ReviewCheckout` is the single code source for every Lens. There
+is no generated `manifest.json`, no virtual `/diffs` tree, and no GitHub patch
+fetch. A changed-file index is generated when requested with:
 
 ```text
-ReviewAgent.review(repo, number)
-  -> Review StateGraph
-       -> fetch_snapshot node
-       -> prepare_workspace node
-       -> run_review node
-            -> correctness deep agent
-            -> security deep agent
-            -> conventions-and-tests deep agent
-       -> Review | ReviewError
+git diff --name-status --find-renames <base>...<head>
 ```
 
-### Stable snapshot
+Diff contents are generated from the same commit range, optionally restricted
+to one repository-relative path. Because the checkout contains the complete
+head tree, agents can also read unchanged callers, callees, configuration, and
+tests.
 
-`GitHubPullRequestReader.fetch_snapshot` reads the pull request head SHA before
-and after fetching changed files. If the head changes, the operation fails and
-the caller can retry. Every Lens therefore reviews the same commit and uses the
-same line coordinates.
+The checkout should be prepared by CI or another trusted caller. In the CLI,
+`REVIEW_CHECKOUT` selects its root and defaults to the current directory. The
+checkout must not contain credentials: deepagents path confinement prevents
+leaving the root, but readable files inside the root are intentionally visible
+to the reviewer.
 
-### Shared workspace
+## ReviewAgent flow
 
-The snapshot becomes an in-memory `ReviewWorkspace`:
+```mermaid
+sequenceDiagram
+    participant Caller
+    participant Graph as Review LangGraph
+    participant Source as GitCheckoutSource
+    participant GitHub as GitHubPullRequestReader
+    participant Runner as DeepAgentReviewRunner
 
-- `/manifest.json` lists every changed file and its diff path.
-- `/diffs/<path>.diff` contains the corresponding patch.
+    Caller->>Graph: review(repo, PR number)
+    Graph->>Source: prepare_checkout
+    Source->>GitHub: get_pull_request_revision
+    Source->>Source: verify HEAD, base, clean status
+    Source-->>Graph: ReviewCheckout
+    Graph->>Runner: run(checkout)
+    Runner-->>Graph: Findings
+    Graph-->>Caller: Review | ReviewError
+```
 
-The workspace is loaded into each deep agent's `StateBackend`. Lenses read the
-Manifest first and inspect relevant diffs with filesystem tools rather than
-calling GitHub independently.
+## ReviewAgent Lens flow
 
-### Lens agents
+```mermaid
+flowchart TD
+    Checkout[Same fixed ReviewCheckout]
+    C[Correctness deep agent]
+    S[Security deep agent]
+    T[Conventions and tests deep agent]
+    Index[list_changed_files]
+    Diff[get_diff]
+    Read[read_file / grep / glob]
+    Out[Validated Findings]
 
-Three independent deep agents examine the whole pull request:
+    Checkout -. same checkout .-> C
+    Checkout -. same checkout .-> S
+    Checkout -. same checkout .-> T
+    C -->|then| S -->|then| T
+    C --> Index
+    C --> Diff
+    C --> Read
+    S --> Index
+    S --> Diff
+    S --> Read
+    T --> Index
+    T --> Diff
+    T --> Read
+    C --> Out
+    S --> Out
+    T --> Out
+```
 
-- **correctness** traces behaviour and contracts across callers and callees;
-- **security** traces data, identity, authorization, and trust seams;
-- **conventions-and-tests** compares implementation, conventions, and tests.
+Lenses run in stable enum order. Within a Lens, independent tool calls are
+requested in the same assistant message so LangChain/deepagents may execute
+them concurrently; dependent calls remain sequential. The configured gateway
+must support parallel tool results.
 
-They run in stable `Lens` enum order. Each one has a Lens-specific Pydantic
-response model, and each Finding is fixed to the originating Lens. Findings are
-concatenated without semantic merging or deduplication.
+Each Lens receives a `FilesystemBackend` rooted at the checkout with virtual
+path confinement. Deepagents filesystem write permission is denied for all
+paths, and the system prompt also prohibits mutation. The custom Git tools use
+argument-vector subprocess calls without a shell and reject parent traversal.
 
-The current prompts require serial tool use inside a Lens agent. This avoids
-provider-specific failures from parallel tool calls and makes execution easier
-to reproduce.
+Each Lens has its own Pydantic response model, fixing every Finding to the
+originating Lens. Findings are concatenated without semantic merging or
+deduplication.
 
-## Domain and output contracts
+## Domain contracts
 
-All public data is represented by frozen Pydantic models:
-
-- `PullRequestSnapshot` pins changed files to one head SHA.
-- `Manifest` and `ManifestFile` describe the virtual Review filesystem.
+- `PullRequestRevision` identifies the base and head commits GitHub expects.
+- `ReviewCheckout` identifies the verified local root and immutable commit
+  range.
 - `Finding` combines `Location`, `Severity`, `Confidence`, and `Lens`.
-- `Review` is the structured source of truth.
-- `ReviewError` is stable failure data from a named pipeline stage.
-- `Report` is a derived human-facing representation.
+- `Review` records base/head SHA and the validated Findings.
+- `ReviewError` names either `prepare_checkout` or `run_review`.
+- `Report` is derived human-facing text.
 - `InquiryAnswer` contains exactly one of `text` or `error`.
-
-Pydantic validation is the seam between model-produced data and trusted library
-output. Invalid structured responses fail the Review run instead of leaking
-partially trusted dictionaries to callers.
 
 ## Adapters and seams
 
-The production and deterministic test adapters cross the same interfaces:
-
-| Seam | Production adapter | Test adapter |
+| Seam | Production adapter | Typical test adapter |
 | --- | --- | --- |
-| `PullRequestReader` | `GitHubPullRequestReader` over PyGithub | In-memory metadata readers |
-| `SnapshotSource` | `GitHubPullRequestReader` over PyGithub | Deterministic or failing snapshot sources |
-| `ReviewRunner` | `DeepAgentReviewRunner` | Deterministic Review runners |
-| `IntentClassifier` | LangChain structured-output agent | Scripted classifiers |
-| LangChain model | Provider `BaseChatModel`, such as `ChatOpenAI` | Deterministic chat models |
+| `PullRequestReader` | `GitHubPullRequestReader` | In-memory metadata reader |
+| `PullRequestRevisionSource` | `GitHubPullRequestReader` | Fixed revision source |
+| `ReviewCheckoutSource` | `GitCheckoutSource` | Fixed or failing checkout source |
+| `ReviewRunner` | `DeepAgentReviewRunner` | Deterministic runner |
+| `IntentClassifier` | LangChain structured-output agent | Scripted classifier |
+| LangChain model | Provider `BaseChatModel` | Deterministic model |
 
-Dependencies are accepted by factories instead of created inside domain
-modules. This keeps GitHub, model providers, and agent execution replaceable at
-the seams without exposing their implementation details to callers.
+## Error and write model
 
-## Error model
+Errors are public data: classifier failures produce `unknown`, Inquiry returns
+`InquiryAnswer(error=...)`, and Review returns a stage-specific `ReviewError`.
+An unrelated turn invokes neither agent.
 
-Errors are data at the public interfaces:
-
-- Intent classification returns `IntentDecision(intent="unknown", error=...)`.
-- An unrelated request returns `IntentDecision(intent="unrelated")` and invokes
-  neither Inquiry nor Review.
-- Inquiry returns `InquiryAnswer(error=...)`.
-- Review returns `ReviewError` with `fetch_snapshot`, `prepare_workspace`, or
-  `run_review` as the failed operation.
-- The CLI reserves exit code `2` for configuration/model setup errors and `1`
-  for GitHub/runtime setup errors; per-turn Inquiry failures remain in the
-  conversation.
-
-The library does not post comments, submit reviews, mutate labels, merge pull
-requests, or perform any other GitHub write. A caller that wants publishing must
-implement that separately from structured Findings.
+Review Sheep does not post comments, submit reviews, mutate labels, merge pull
+requests, or modify the Review checkout. Publishing remains a separate caller
+responsibility.
 
 ## Runtime composition
 
-The CLI in `scripts/review_chat.py` delegates to `review_sheep.chat.main` and
-constructs this object graph:
-
 ```text
 .env
-  -> PyGithub client
-  -> GitHubPullRequestReader
+  -> PyGithub client -> GitHubPullRequestReader
+  -> REVIEW_CHECKOUT -> GitCheckoutSource
   -> ChatOpenAI
-  -> create_inquiry_agent
-  -> create_intent_classifier
-  -> create_deep_review_agent
-  -> create_chatbot_graph
-  -> continuous terminal loop
+  -> InquiryAgent + IntentClassifier + ReviewAgent
+  -> chatbot LangGraph
+  -> terminal loop
 ```
 
 Required environment variables are `GITHUB_TOKEN`, `OPENAI_MODEL`, and
-`OPENAI_API_KEY`; `BASE_URL` is optional for OpenAI-compatible endpoints.
+`OPENAI_API_KEY`. `BASE_URL` and `REVIEW_CHECKOUT` are optional.
 
-## Verification strategy
+The reusable `.github/workflows/review-pr.yml` workflow checks out the caller's
+PR head and full history into `review-target`, downloads Review Sheep into the
+separate `review-sheep` directory, and invokes `scripts/review_pr.py`. Keeping
+the directories separate prevents dependency installation from making the
+verified Review Checkout dirty.
 
-Tests exercise the same module interfaces used by production callers:
+Tests use temporary real Git repositories for checkout invariants and diff
+behavior, deterministic adapters for both LangGraphs, and a built-wheel smoke
+test. No live GitHub repository or model provider is required.
 
-- graph tests assert the classifier's conditional Inquiry and Review routes,
-  accumulated messages, and structured state;
-- Inquiry tests use deterministic models and fake GitHub readers to verify tool
-  selection, truncation, conversation, and failures;
-- Review tests inject snapshots, runners, and deterministic deep-agent models
-  through the same interface while the internal LangGraph remains unchanged;
-- GitHub adapter tests verify metadata mapping and head-change detection;
-- distribution smoke tests install the built wheel and exercise public imports.
-
-No live GitHub repository or model provider is required by the test suite.
-
-## Constraints and extension points
-
-Current constraints:
-
-- Python 3.11 or newer;
-- read-only GitHub access;
-- in-memory conversation state;
-- one classifier plus Inquiry, Review, and unrelated Bot nodes, and three Review
-  workflow nodes;
-- Review Lenses run sequentially;
-- no Finding merge or verification pass.
-
-Natural extension points are adding a LangGraph checkpointer, adding another
-intent route, introducing another Lens, or building a separate publishing
-adapter. These additions should preserve the Pydantic contracts and the
-read-only core.
-
-Historical decisions and their tradeoffs are recorded in [`docs/adr`](docs/adr).
-Domain terminology is defined in [`CONTEXT.md`](CONTEXT.md).
+Historical decisions are in [`docs/adr`](docs/adr), and canonical terminology
+is in [`CONTEXT.md`](CONTEXT.md).
