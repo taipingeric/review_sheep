@@ -252,8 +252,11 @@ responsibility.
   -> terminal loop
 ```
 
-Required environment variables are `GITHUB_TOKEN`, `OPENAI_MODEL`, and
-`OPENAI_API_KEY`. `BASE_URL` and `REVIEW_CHECKOUT` are optional.
+The interactive Chat CLI requires `GITHUB_TOKEN`, `OPENAI_MODEL`, and
+`OPENAI_API_KEY`; `BASE_URL` is optional. The non-interactive CI entrypoint uses
+`GITHUB_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, and the selected
+`ANTHROPIC_DEFAULT_{HAIKU|SONNET|OPUS}_MODEL`. Custom headers and model tier are
+optional.
 
 The reusable `.github/workflows/review-pr.yml` workflow checks out the caller's
 PR head and full history into `review-target`, downloads Review Sheep into the

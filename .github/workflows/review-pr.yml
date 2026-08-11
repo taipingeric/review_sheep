@@ -8,14 +8,10 @@ on:
         required: false
         default: main
         type: string
-      model:
-        description: OpenAI-compatible model name.
-        required: true
-        type: string
-      base_url:
-        description: Optional OpenAI-compatible API base URL.
+      model_tier:
+        description: Anthropic model tier to use (haiku, sonnet, or opus).
         required: false
-        default: ""
+        default: sonnet
         type: string
       instructions:
         description: Optional additional Review instructions.
@@ -23,9 +19,24 @@ on:
         default: ""
         type: string
     secrets:
-      openai_api_key:
-        description: API key for the configured model gateway.
+      ANTHROPIC_AUTH_TOKEN:
+        description: Bearer token for the Anthropic-compatible gateway.
         required: true
+      ANTHROPIC_BASE_URL:
+        description: Anthropic-compatible gateway endpoint.
+        required: true
+      ANTHROPIC_CUSTOM_HEADERS:
+        description: Optional newline-separated custom request headers.
+        required: false
+      ANTHROPIC_DEFAULT_HAIKU_MODEL:
+        description: Gateway model ID for the Haiku tier.
+        required: false
+      ANTHROPIC_DEFAULT_OPUS_MODEL:
+        description: Gateway model ID for the Opus tier.
+        required: false
+      ANTHROPIC_DEFAULT_SONNET_MODEL:
+        description: Gateway model ID for the Sonnet tier.
+        required: false
 
 permissions:
   contents: read
@@ -64,19 +75,24 @@ jobs:
         shell: bash
         working-directory: review-sheep
         env:
-          BASE_URL: ${{ inputs.base_url }}
+          ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_OPUS_MODEL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}
           GITHUB_TOKEN: ${{ github.token }}
-          OPENAI_API_KEY: ${{ secrets.openai_api_key }}
-          OPENAI_MODEL: ${{ inputs.model }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/review-target
           REVIEW_INSTRUCTIONS: ${{ inputs.instructions }}
+          REVIEW_MODEL_TIER: ${{ inputs.model_tier }}
           REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
-          uv run --extra openai python scripts/review_pr.py \
+          uv run python scripts/review_pr.py \
             --repo "$GITHUB_REPOSITORY" \
             --pr-number "$REVIEW_PR_NUMBER" \
             --checkout "$REVIEW_CHECKOUT" \
             --instructions "$REVIEW_INSTRUCTIONS" \
+            --model-tier "$REVIEW_MODEL_TIER" \
             | tee "$RUNNER_TEMP/review-sheep-report.md"
           cat "$RUNNER_TEMP/review-sheep-report.md" >> "$GITHUB_STEP_SUMMARY"

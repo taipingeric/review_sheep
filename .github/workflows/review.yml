@@ -14,8 +14,12 @@ jobs:
     uses: ./.github/workflows/review-pr.yml
     with:
       review_sheep_ref: ${{ github.event.pull_request.head.sha }}
-      model: ${{ vars.OPENAI_MODEL || 'gpt-5-mini' }}
-      base_url: ${{ vars.BASE_URL }}
+      model_tier: ${{ vars.REVIEW_MODEL_TIER || 'sonnet' }}
       instructions: ${{ vars.REVIEW_INSTRUCTIONS }}
     secrets:
-      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_OPUS_MODEL }}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}

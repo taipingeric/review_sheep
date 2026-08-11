@@ -1,12 +1,10 @@
 # Python 3.11 floor, and no anthropic or gemini extras
 
-`deepagents` requires Python `>=3.11` and already depends on
-`langchain-anthropic` and `langchain-google-genai`, so taking it as a required
-dependency drops our Python 3.10 support and makes those two optional extras
-dishonest — installing the core already installs them. They are removed, along
-with the `all` extra that referenced them; only `openai` remains an extra,
-because `langchain-openai` is genuinely not pulled in by `deepagents` and
-the optional `review_sheep.chat` adapter needs it.
+`deepagents` requires Python `>=3.11` and already installs its provider stack, so
+taking it as a required dependency drops our Python 3.10 support and makes
+provider optional extras dishonest. Anthropic is now also a direct dependency
+because the production CI adapter imports `ChatAnthropic`; only `openai` remains
+an extra because the optional `review_sheep.chat` adapter needs it.
 
 ## Consequences
 

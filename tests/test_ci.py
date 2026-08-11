@@ -28,8 +28,12 @@ class FakeReviewer:
 
 def _configure(monkeypatch: Any) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "github-token")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "model-key")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "auth-token")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://gateway.example.com")
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "X-Team: review-sheep")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_HAIKU_MODEL", "gateway-haiku")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_OPUS_MODEL", "gateway-opus")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "gateway-sonnet")
 
 
 def _empty_review() -> Review:
@@ -51,10 +55,15 @@ def test_ci_prints_one_report_and_closes_github_client(
     github = FakeGithubClient()
     reviewer = FakeReviewer(_empty_review())
     reviewer_configs: list[dict[str, Any]] = []
+    model_configs: list[dict[str, Any]] = []
 
     def reviewer_factory(**kwargs: Any) -> FakeReviewer:
         reviewer_configs.append(kwargs)
         return reviewer
+
+    def model_factory(**kwargs: Any) -> str:
+        model_configs.append(kwargs)
+        return "test:model"
 
     exit_code = main(
         [
@@ -70,7 +79,7 @@ def test_ci_prints_one_report_and_closes_github_client(
         output=output,
         error=errors,
         github_factory=lambda _: github,
-        model_factory=lambda **_: "test:model",
+        model_factory=model_factory,
         reviewer_factory=reviewer_factory,
     )
 
@@ -89,6 +98,14 @@ No Findings.
     assert reviewer.calls == [("acme/widgets", 42)]
     assert reviewer_configs[0]["model"] == "test:model"
     assert reviewer_configs[0]["instructions"] == "Focus on authorization."
+    assert model_configs == [
+        {
+            "model": "gateway-sonnet",
+            "auth_token": "auth-token",
+            "base_url": "https://gateway.example.com",
+            "custom_headers": "X-Team: review-sheep",
+        }
+    ]
     assert github.closed is True
 
 
@@ -140,8 +157,12 @@ def test_ci_requires_pull_request_context_before_creating_clients(
         "GITHUB_REPOSITORY",
         "REVIEW_PR_NUMBER",
         "GITHUB_TOKEN",
-        "OPENAI_MODEL",
-        "OPENAI_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+        "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        "ANTHROPIC_DEFAULT_OPUS_MODEL",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
     errors = StringIO()
@@ -175,6 +196,8 @@ def test_reusable_workflow_keeps_tooling_outside_the_review_checkout() -> None:
     assert "repository: taipingeric/review_sheep" in workflow
     assert "path: review-target" in workflow
     assert "path: review-sheep" in workflow
+    assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
+    assert "ANTHROPIC_DEFAULT_SONNET_MODEL" in workflow
     assert "python scripts/review_pr.py" in workflow
 
 
@@ -184,5 +207,36 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert "pull_request:" in workflow
     assert "uses: ./.github/workflows/review-pr.yml" in workflow
     assert "review_sheep_ref: ${{ github.event.pull_request.head.sha }}" in workflow
-    assert "openai_api_key: ${{ secrets.OPENAI_API_KEY }}" in workflow
+    assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
+    assert "ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}" in workflow
     assert "head.repo.full_name == github.repository" in workflow
+
+
+def test_ci_can_select_the_opus_gateway_model(monkeypatch: Any, tmp_path: Path) -> None:
+    _configure(monkeypatch)
+    selected_models: list[str] = []
+
+    def model_factory(**kwargs: Any) -> str:
+        selected_models.append(kwargs["model"])
+        return "test:model"
+
+    exit_code = main(
+        [
+            "--repo",
+            "acme/widgets",
+            "--pr-number",
+            "42",
+            "--checkout",
+            str(tmp_path),
+            "--model-tier",
+            "opus",
+        ],
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: FakeGithubClient(),
+        model_factory=model_factory,
+        reviewer_factory=lambda **_: FakeReviewer(_empty_review()),
+    )
+
+    assert exit_code == 0
+    assert selected_models == ["gateway-opus"]

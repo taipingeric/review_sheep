@@ -189,17 +189,23 @@ job log and appended to the GitHub Actions step summary; it is not posted to the
 pull request.
 
 This repository also contains `.github/workflows/review.yml`, which runs the
-reusable workflow automatically for same-repository pull requests. Configure:
+reusable workflow automatically for same-repository pull requests. Configure
+these repository **Actions secrets**:
 
-- repository secret `OPENAI_API_KEY` (required);
-- repository variable `OPENAI_MODEL` (optional, defaults to `gpt-5-mini`);
-- repository variable `BASE_URL` (optional); and
-- repository variable `REVIEW_INSTRUCTIONS` (optional).
+- `ANTHROPIC_AUTH_TOKEN` (required bearer token);
+- `ANTHROPIC_BASE_URL` (required gateway URL);
+- `ANTHROPIC_CUSTOM_HEADERS` (optional `Name: Value` lines);
+- `ANTHROPIC_DEFAULT_HAIKU_MODEL`;
+- `ANTHROPIC_DEFAULT_OPUS_MODEL`; and
+- `ANTHROPIC_DEFAULT_SONNET_MODEL` (the default Review model).
+
+Optional Actions variables are `REVIEW_MODEL_TIER` (`haiku`, `sonnet`, or
+`opus`, default `sonnet`) and `REVIEW_INSTRUCTIONS`.
 
 Fork pull requests are intentionally skipped because the `pull_request` event
 does not expose repository model secrets to untrusted forks.
 
-Add an `OPENAI_API_KEY` repository secret to the repository being reviewed, then
+Add the Anthropic Actions secrets above to the repository being reviewed, then
 create `.github/workflows/review-sheep.yml` there:
 
 ```yaml
@@ -221,17 +227,25 @@ jobs:
     with:
       # Use the same full commit SHA as the reusable workflow reference above.
       review_sheep_ref: REVIEW_SHEEP_SHA
-      model: gpt-5-mini
-      # base_url: https://your-compatible-endpoint/v1
+      model_tier: sonnet
       # instructions: Focus on authorization and data integrity.
     secrets:
-      openai_api_key: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
+      ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_OPUS_MODEL }}
+      ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}
 ```
 
 Replace both `REVIEW_SHEEP_SHA` placeholders with the same full Review Sheep
 commit SHA. Pinning prevents workflow code and the downloaded Python package
 from drifting independently. Do not change this workflow to
 `pull_request_target` and then execute untrusted PR code with model secrets.
+
+`ANTHROPIC_AUTH_TOKEN` is passed through the Anthropic SDK's bearer-token
+authentication path. `ANTHROPIC_CUSTOM_HEADERS` follows Claude Code's
+newline-separated `Name: Value` convention.
 
 The reusable workflow checks out the exact PR head with full Git history, so
 `GitCheckoutSource` can verify the head SHA and resolve the base commit before

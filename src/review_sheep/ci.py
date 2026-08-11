@@ -13,7 +13,11 @@ from dotenv import load_dotenv
 from review_sheep.checkout import GitCheckoutSource
 from review_sheep.domain import Review, ReviewError
 from review_sheep.github import GitHubPullRequestReader
-from review_sheep.providers import ModelFactory, github_client, openai_model
+from review_sheep.providers import (
+    AnthropicModelFactory,
+    anthropic_model,
+    github_client,
+)
 from review_sheep.report import render_report
 from review_sheep.review import create_deep_review_agent
 
@@ -36,6 +40,11 @@ def _parser() -> argparse.ArgumentParser:
         "--instructions",
         default=os.getenv("REVIEW_INSTRUCTIONS", ""),
     )
+    parser.add_argument(
+        "--model-tier",
+        choices=("haiku", "sonnet", "opus"),
+        default=(os.getenv("REVIEW_MODEL_TIER", "").strip() or "sonnet").lower(),
+    )
     return parser
 
 
@@ -52,7 +61,7 @@ def main(
     output: TextIO | None = None,
     error: TextIO | None = None,
     github_factory: Callable[[str], Any] = github_client,
-    model_factory: ModelFactory = openai_model,
+    model_factory: AnthropicModelFactory = anthropic_model,
     reviewer_factory: Callable[..., Any] = create_deep_review_agent,
 ) -> int:
     """Run one Review, print its Markdown Report, and return a CI-safe exit code."""
@@ -67,9 +76,13 @@ def main(
             raise RuntimeError("--pr-number or REVIEW_PR_NUMBER must be positive")
         checkout_root = _required(args.checkout, "--checkout or REVIEW_CHECKOUT")
         github_token = _required(os.getenv("GITHUB_TOKEN", ""), "GITHUB_TOKEN")
-        model_name = _required(os.getenv("OPENAI_MODEL", ""), "OPENAI_MODEL")
-        api_key = _required(os.getenv("OPENAI_API_KEY", ""), "OPENAI_API_KEY")
-        base_url = os.getenv("BASE_URL", "").strip() or None
+        model_env = f"ANTHROPIC_DEFAULT_{args.model_tier.upper()}_MODEL"
+        model_name = _required(os.getenv(model_env, ""), model_env)
+        auth_token = _required(
+            os.getenv("ANTHROPIC_AUTH_TOKEN", ""), "ANTHROPIC_AUTH_TOKEN"
+        )
+        base_url = _required(os.getenv("ANTHROPIC_BASE_URL", ""), "ANTHROPIC_BASE_URL")
+        custom_headers = os.getenv("ANTHROPIC_CUSTOM_HEADERS", "")
     except RuntimeError as config_error:
         print(f"error: {config_error}", file=error)
         return 2
@@ -85,8 +98,9 @@ def main(
         try:
             model = model_factory(
                 model=model_name,
-                api_key=api_key,
+                auth_token=auth_token,
                 base_url=base_url,
+                custom_headers=custom_headers,
             )
         except (RuntimeError, ValueError) as config_error:
             print(f"error: {config_error}", file=error)
