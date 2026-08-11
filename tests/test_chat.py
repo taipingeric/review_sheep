@@ -109,9 +109,13 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation(
     output = StringIO()
     errors = StringIO()
     github = FakeGithubClient()
+    reviewer_configs: list[dict[str, Any]] = []
 
     def end_input(_: str) -> str:
         raise EOFError
+
+    def reviewer_factory(**kwargs: Any) -> None:
+        reviewer_configs.append(kwargs)
 
     exit_code = main(
         input_fn=end_input,
@@ -119,6 +123,7 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation(
         error=errors,
         github_factory=lambda _: github,
         model_factory=lambda **_: DeterministicInquiryModel(),
+        reviewer_factory=reviewer_factory,
     )
 
     assert exit_code == 0
@@ -129,6 +134,11 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation(
     )
     assert errors.getvalue() == ""
     assert github.closed is True
+    assert len(reviewer_configs) == 1
+    assert reviewer_configs[0]["source"].__class__.__name__ == (
+        "GitHubPullRequestReader"
+    )
+    assert "checkout" not in reviewer_configs[0]
 
 
 def test_chat_treats_a_whitespace_base_url_as_unset(monkeypatch: Any) -> None:

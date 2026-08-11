@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import PurePosixPath
-from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
+from typing import Literal, NotRequired, Protocol, TypedDict, cast
 
 from deepagents import create_deep_agent as _create_deep_agent
 from deepagents.backends import FilesystemBackend
@@ -13,7 +14,6 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from pydantic import BaseModel, ConfigDict
 
 from review_sheep.checkout import git_changed_files, git_diff
 from review_sheep.domain import (
@@ -24,11 +24,14 @@ from review_sheep.domain import (
     ReviewError,
     ReviewOperation,
 )
-
-_PARALLEL_TOOL_USE_PROMPT = (
-    "When multiple independent tool calls are needed, call them in parallel in the "
-    "same assistant message. Keep dependent tool calls sequential. "
+from review_sheep.lenses import (
+    LENS_RESULT_SCHEMAS,
+    LENS_SYSTEM_PROMPTS,
+    PARALLEL_TOOL_USE_PROMPT,
+    validate_lens_findings,
 )
+
+logger = logging.getLogger(__name__)
 
 _CHECKOUT_PROMPT = (
     "The repository is a clean local worktree fixed at the pull request head SHA. "
@@ -60,76 +63,6 @@ class _ReviewGraphState(TypedDict):
     result: NotRequired[Review | ReviewError]
 
 
-class CorrectnessFinding(Finding):
-    """Finding contract fixed to the correctness Lens."""
-
-    lens: Literal[Lens.CORRECTNESS] = Lens.CORRECTNESS
-
-
-class SecurityFinding(Finding):
-    """Finding contract fixed to the security Lens."""
-
-    lens: Literal[Lens.SECURITY] = Lens.SECURITY
-
-
-class ConventionsAndTestsFinding(Finding):
-    """Finding contract fixed to the conventions-and-tests Lens."""
-
-    lens: Literal[Lens.CONVENTIONS_AND_TESTS] = Lens.CONVENTIONS_AND_TESTS
-
-
-class CorrectnessResult(BaseModel):
-    """Structured output contract for the correctness Lens."""
-
-    model_config = ConfigDict(frozen=True)
-
-    findings: list[CorrectnessFinding]
-
-
-class SecurityResult(BaseModel):
-    """Structured output contract for the security Lens."""
-
-    model_config = ConfigDict(frozen=True)
-
-    findings: list[SecurityFinding]
-
-
-class ConventionsAndTestsResult(BaseModel):
-    """Structured output contract for the conventions-and-tests Lens."""
-
-    model_config = ConfigDict(frozen=True)
-
-    findings: list[ConventionsAndTestsFinding]
-
-
-_LENS_RESULT_SCHEMAS: dict[Lens, type[BaseModel]] = {
-    Lens.CORRECTNESS: CorrectnessResult,
-    Lens.SECURITY: SecurityResult,
-    Lens.CONVENTIONS_AND_TESTS: ConventionsAndTestsResult,
-}
-
-_LENS_SYSTEM_PROMPTS = {
-    Lens.CORRECTNESS: (
-        "Plan the Review, then inspect the whole pull request through the "
-        "correctness Lens, not one file in isolation. Trace changed contracts "
-        "across callers and callees, and report only actionable defects. Every "
-        "output item must use the correctness lens."
-    ),
-    Lens.SECURITY: (
-        "Plan the Review, then inspect the whole pull request through the security "
-        "Lens. Trace data, identity, authorization, and trust boundaries across "
-        "files. Report only actionable security defects. Every output item must "
-        "use the security lens."
-    ),
-    Lens.CONVENTIONS_AND_TESTS: (
-        "Plan the Review, then inspect the whole pull request through the "
-        "conventions-and-tests Lens. Compare related implementation and tests "
-        "across files. Report only actionable convention or test defects. Every "
-        "output item must use the conventions-and-tests lens."
-    ),
-}
-
-
 class DeepAgentReviewRunner:
     """Run one independent deep agent per Lens over the same fixed checkout."""
 
@@ -144,12 +77,21 @@ class DeepAgentReviewRunner:
 
     def run(self, checkout: ReviewCheckout) -> list[Finding]:
         """Run and concatenate Lens Findings in stable Lens order."""
+        logger.info(
+            "checkout.review.start repo=%s pr=%d base=%s head=%s",
+            checkout.repo,
+            checkout.pull_request_number,
+            checkout.base_sha,
+            checkout.head_sha,
+        )
         findings: list[Finding] = []
         for lens in Lens:
             findings.extend(self._run_lens(lens, checkout))
+        logger.info("checkout.review.complete findings=%d", len(findings))
         return findings
 
     def _run_lens(self, lens: Lens, checkout: ReviewCheckout) -> list[Finding]:
+        logger.info("checkout.lens.start lens=%s", lens.value)
         agent = _create_deep_agent(
             model=self._model,
             tools=_checkout_tools(checkout),
@@ -161,11 +103,9 @@ class DeepAgentReviewRunner:
                     mode="deny",
                 )
             ],
-            response_format=ToolStrategy(_LENS_RESULT_SCHEMAS[lens]),
+            response_format=ToolStrategy(LENS_RESULT_SCHEMAS[lens]),
             system_prompt=(
-                _PARALLEL_TOOL_USE_PROMPT
-                + _CHECKOUT_PROMPT
-                + _LENS_SYSTEM_PROMPTS[lens]
+                PARALLEL_TOOL_USE_PROMPT + _CHECKOUT_PROMPT + LENS_SYSTEM_PROMPTS[lens]
             ),
         )
         request = (
@@ -176,7 +116,18 @@ class DeepAgentReviewRunner:
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
         result = agent.invoke({"messages": [{"role": "user", "content": request}]})
-        return _validate_lens_findings(lens, result["structured_response"])
+        findings = validate_lens_findings(lens, result["structured_response"])
+        logger.info(
+            "checkout.lens.complete lens=%s findings=%d",
+            lens.value,
+            len(findings),
+        )
+        logger.debug(
+            "checkout.lens.findings lens=%s data=%s",
+            lens.value,
+            [finding.model_dump(mode="json") for finding in findings],
+        )
+        return findings
 
 
 def _checkout_tools(checkout: ReviewCheckout) -> list[BaseTool]:
@@ -202,17 +153,6 @@ def _normalize_repo_path(path: str) -> str:
     if ".." in parts:
         raise ValueError("diff path must stay inside the review checkout")
     return str(PurePosixPath(*parts))
-
-
-def _validate_lens_findings(lens: Lens, payload: Any) -> list[Finding]:
-    findings: list[Finding] = []
-    if lens is Lens.CORRECTNESS:
-        findings.extend(CorrectnessResult.model_validate(payload).findings)
-    elif lens is Lens.SECURITY:
-        findings.extend(SecurityResult.model_validate(payload).findings)
-    else:
-        findings.extend(ConventionsAndTestsResult.model_validate(payload).findings)
-    return findings
 
 
 class ReviewAgent:
@@ -244,11 +184,17 @@ def _create_review_graph(
 
     def prepare_checkout(state: _ReviewGraphState) -> dict[str, object]:
         try:
+            logger.info(
+                "checkout.graph.prepare repo=%s pr=%d",
+                state["repo"],
+                state["pull_request_number"],
+            )
             checkout = source.prepare_checkout(
                 repo=state["repo"],
                 number=state["pull_request_number"],
             )
-        except Exception as error:  # noqa: BLE001 - failures are public data here
+        except Exception as error:
+            logger.exception("checkout.graph.prepare.failed")
             return {
                 "result": _review_error(
                     state=state,
@@ -260,8 +206,10 @@ def _create_review_graph(
 
     def run_review(state: _ReviewGraphState) -> dict[str, object]:
         try:
+            logger.info("checkout.graph.run_review")
             findings = runner.run(state["checkout"])
-        except Exception as error:  # noqa: BLE001 - failures are public data here
+        except Exception as error:
+            logger.exception("checkout.graph.run_review.failed")
             return {
                 "result": _review_error(
                     state=state,

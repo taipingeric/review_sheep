@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Sequence
 from typing import Any, Protocol
 
@@ -12,6 +13,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from review_sheep.domain import InquiryAnswer
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "You are Review Sheep, a read-only assistant for understanding and reviewing "
@@ -60,18 +63,27 @@ class InquiryAgent:
             return InquiryAnswer(error="Inquiry messages must not be empty")
 
         try:
+            logger.info("inquiry.start messages=%d", len(messages))
             state = self._agent.invoke({"messages": list(messages)})
             result_messages = state["messages"]
             message = result_messages[-1]
-        except Exception as error:  # noqa: BLE001 - errors are public data here
+        except Exception as error:
+            logger.exception("inquiry.failed")
             return InquiryAnswer(error=f"{type(error).__name__}: {error}")
 
         if not isinstance(message, AIMessage) or not message.text:
             return InquiryAnswer(error="Inquiry produced no answer")
-        return InquiryAnswer(
+        answer = InquiryAnswer(
             text=message.text,
             incomplete=_contains_truncated_tool_data(result_messages),
         )
+        logger.info(
+            "inquiry.complete characters=%d incomplete=%s",
+            len(answer.text or ""),
+            answer.incomplete,
+        )
+        logger.debug("inquiry.answer %s", answer.text)
+        return answer
 
 
 def _contains_truncated_tool_data(messages: list[BaseMessage]) -> bool:
@@ -91,8 +103,18 @@ def _as_tool_data(
     operation: Any, *, operation_name: str, repo: str, **kwargs: Any
 ) -> str:
     try:
-        return json.dumps(operation(repo=repo, **kwargs))
-    except Exception as error:  # noqa: BLE001 - tool failures must not kill the run
+        logger.info(
+            "inquiry.tool.start operation=%s repo=%s args=%s",
+            operation_name,
+            repo or "default",
+            kwargs,
+        )
+        result = operation(repo=repo, **kwargs)
+        logger.info("inquiry.tool.complete operation=%s", operation_name)
+        logger.debug("inquiry.tool.result operation=%s data=%s", operation_name, result)
+        return json.dumps(result)
+    except Exception as error:
+        logger.exception("inquiry.tool.failed operation=%s", operation_name)
         return json.dumps(
             {
                 "error": str(error),

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
-from review_sheep.domain import PullRequestRevision
+from review_sheep.domain import PullRequestRevision, PullRequestSnapshot, SnapshotFile
+
+logger = logging.getLogger(__name__)
 
 
 class GitHubPullRequestReader:
@@ -38,6 +41,9 @@ class GitHubPullRequestReader:
         self, *, state: str, limit: int, repo: str
     ) -> dict[str, Any]:
         target = self._repo(repo)
+        logger.info(
+            "github.list_pull_requests repo=%s state=%s limit=%d", target, state, limit
+        )
         pulls = self._client.get_repo(target).get_pulls(
             state=state, sort="updated", direction="desc"
         )
@@ -54,6 +60,7 @@ class GitHubPullRequestReader:
 
     def get_pull_request(self, *, number: int, repo: str) -> dict[str, Any]:
         target = self._repo(repo)
+        logger.info("github.get_pull_request repo=%s pr=%d", target, number)
         pull = self._client.get_repo(target).get_pull(number)
         details = self._summarize(pull)
         details.update(
@@ -75,6 +82,7 @@ class GitHubPullRequestReader:
 
     def get_pull_request_reviews(self, *, number: int, repo: str) -> dict[str, Any]:
         target = self._repo(repo)
+        logger.info("github.get_pull_request_reviews repo=%s pr=%d", target, number)
         pull = self._client.get_repo(target).get_pull(number)
 
         reviews = []
@@ -119,10 +127,74 @@ class GitHubPullRequestReader:
     ) -> PullRequestRevision:
         """Read the immutable base and head commits expected by Review."""
         target = self._repo(repo)
+        logger.info("github.get_revision.start repo=%s pr=%d", target, number)
         pull = self._client.get_repo(target).get_pull(number)
-        return PullRequestRevision(
+        revision = PullRequestRevision(
             repo=target,
             number=number,
             base_sha=pull.base.sha,
             head_sha=pull.head.sha,
         )
+        logger.info(
+            "github.get_revision.complete repo=%s pr=%d base=%s head=%s",
+            target,
+            number,
+            revision.base_sha,
+            revision.head_sha,
+        )
+        return revision
+
+    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
+        """Fetch one stable pull-request patch snapshot for Manifest Review."""
+        target = self._repo(repo)
+        logger.info("github.snapshot.start repo=%s pr=%d", target, number)
+        repository = self._client.get_repo(target)
+        pull = repository.get_pull(number)
+        base_sha = pull.base.sha
+        head_sha = pull.head.sha
+        changed_files = list(pull.get_files())
+        current_head_sha = repository.get_pull(number).head.sha
+        if current_head_sha != head_sha:
+            logger.warning(
+                "github.snapshot.changed repo=%s pr=%d expected=%s current=%s",
+                target,
+                number,
+                head_sha,
+                current_head_sha,
+            )
+            raise RuntimeError(
+                "pull request head changed while fetching snapshot; retry the Review"
+            )
+        snapshot = PullRequestSnapshot(
+            repo=target,
+            number=number,
+            base_sha=base_sha,
+            head_sha=head_sha,
+            files=[
+                SnapshotFile(
+                    path=changed.filename,
+                    status=changed.status,
+                    additions=changed.additions,
+                    deletions=changed.deletions,
+                    patch=changed.patch or "",
+                    previous_path=changed.previous_filename,
+                )
+                for changed in changed_files
+            ],
+        )
+        logger.info(
+            "github.snapshot.complete repo=%s pr=%d base=%s head=%s files=%d",
+            target,
+            number,
+            base_sha,
+            head_sha,
+            len(snapshot.files),
+        )
+        logger.debug(
+            "github.snapshot.patches %s",
+            [
+                {"path": file.path, "characters": len(file.patch)}
+                for file in snapshot.files
+            ],
+        )
+        return snapshot

@@ -36,6 +36,8 @@ class Lens(str, Enum):
 class ReviewOperation(str, Enum):
     """The Review pipeline stage a ReviewError came from."""
 
+    FETCH_SNAPSHOT = "fetch_snapshot"
+    PREPARE_WORKSPACE = "prepare_workspace"
     PREPARE_CHECKOUT = "prepare_checkout"
     RUN_REVIEW = "run_review"
 
@@ -122,6 +124,66 @@ class Finding(BaseModel):
     severity: Severity
     confidence: Confidence
     lens: Lens
+
+
+class SnapshotFile(BaseModel):
+    """One changed file fetched from GitHub, including its raw patch."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    status: str
+    additions: int = Field(ge=0)
+    deletions: int = Field(ge=0)
+    patch: str
+    previous_path: str | None = None
+
+
+class PullRequestSnapshot(BaseModel):
+    """Changed-code patches pinned to one pull-request revision."""
+
+    model_config = ConfigDict(frozen=True)
+
+    repo: str
+    number: int = Field(gt=0)
+    base_sha: str = Field(min_length=1)
+    head_sha: str = Field(min_length=1)
+    files: list[SnapshotFile]
+
+
+class ManifestFile(BaseModel):
+    """One manifest entry pointing to a virtual diff file."""
+
+    model_config = ConfigDict(frozen=True)
+
+    path: str
+    status: str
+    additions: int = Field(ge=0)
+    deletions: int = Field(ge=0)
+    changes: int = Field(ge=0)
+    diff_path: str
+    previous_path: str | None = None
+
+
+class Manifest(BaseModel):
+    """Index used by Chat Review agents to navigate API-fetched patches."""
+
+    model_config = ConfigDict(frozen=True)
+
+    repo: str
+    pull_request_number: int = Field(gt=0)
+    base_sha: str = Field(min_length=1)
+    head_sha: str = Field(min_length=1)
+    files: list[ManifestFile]
+
+
+class ReviewWorkspace(BaseModel):
+    """A Manifest plus its virtual diff files."""
+
+    model_config = ConfigDict(frozen=True)
+
+    manifest: Manifest
+    files: dict[str, str]
 
 
 class PullRequestRevision(BaseModel):

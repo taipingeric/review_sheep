@@ -1,5 +1,9 @@
 # Review reads a fixed local Git checkout
 
+This decision remains authoritative for CI and fixed-checkout library callers.
+ADR 0008 adds a Manifest adapter for interactive Chat without weakening these
+checkout invariants.
+
 Review receives a clean local worktree whose `HEAD` exactly matches the pull
 request head SHA and whose object database contains the base SHA. Lenses derive
 their changed-file index and diffs from `git diff base...head` and can read the

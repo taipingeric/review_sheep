@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from functools import cached_property
 from typing import Any, Protocol
@@ -10,6 +11,8 @@ from github import Auth, Github
 from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from pydantic import SecretStr
+
+logger = logging.getLogger(__name__)
 
 
 class ModelFactory(Protocol):
@@ -44,11 +47,17 @@ class _AuthTokenChatAnthropic(ChatAnthropic):
 
 def github_client(token: str) -> Github:
     """Create the production read-only GitHub API client."""
+    logger.info("provider.github.create auth=token")
     return Github(auth=Auth.Token(token))
 
 
 def openai_model(*, model: str, api_key: str, base_url: str | None) -> BaseChatModel:
     """Create the production OpenAI-compatible LangChain model."""
+    logger.info(
+        "provider.openai.create model=%s base_url=%s",
+        model,
+        base_url or "provider-default",
+    )
     try:
         from langchain_openai import ChatOpenAI
     except ImportError as error:
@@ -73,12 +82,19 @@ def anthropic_model(
     custom_headers: str,
 ) -> BaseChatModel:
     """Create a ChatAnthropic model from Claude Code gateway conventions."""
+    headers = parse_anthropic_custom_headers(custom_headers)
+    logger.info(
+        "provider.anthropic.create model=%s base_url=%s custom_header_count=%d",
+        model,
+        base_url,
+        len(headers),
+    )
     return _AuthTokenChatAnthropic.model_validate(
         {
             "model": model,
             "auth_token": SecretStr(auth_token),
             "base_url": base_url,
-            "default_headers": parse_anthropic_custom_headers(custom_headers),
+            "default_headers": headers,
             "temperature": 0,
         }
     )

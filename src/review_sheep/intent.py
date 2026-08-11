@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from typing import Any, Literal, Protocol
 
@@ -12,6 +13,8 @@ from langchain_core.messages import BaseMessage
 from pydantic import BaseModel, ConfigDict, Field
 
 from review_sheep.domain import ChatIntent, IntentDecision
+
+logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
     "Classify the user's latest pull-request request into exactly one route.\n"
@@ -51,12 +54,22 @@ class _LangChainIntentClassifier:
     def classify(self, messages: Sequence[BaseMessage]) -> IntentDecision:
         """Return stable routing data even when classification fails."""
         if not messages:
+            logger.warning("intent.failed reason=no_messages")
             return IntentDecision(intent=ChatIntent.UNKNOWN, error="No messages")
         try:
+            logger.info("intent.classify.start messages=%d", len(messages))
             state = self._agent.invoke({"messages": list(messages)})
             response = state["structured_response"]
-            return IntentDecision.model_validate(response.model_dump())
-        except Exception as error:  # noqa: BLE001 - routing failure is public data
+            decision = IntentDecision.model_validate(response.model_dump())
+            logger.info(
+                "intent.classify.complete intent=%s repo=%s pr=%s",
+                decision.intent.value,
+                decision.repo or "none",
+                decision.pull_request_number or "none",
+            )
+            return decision
+        except Exception as error:
+            logger.exception("intent.classify.failed")
             return IntentDecision(
                 intent=ChatIntent.UNKNOWN,
                 error=f"{type(error).__name__}: {error}",

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
-from typing import Literal, NotRequired
+from typing import Literal, NotRequired, Protocol
 
 from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -19,7 +20,14 @@ from review_sheep.domain import (
 from review_sheep.inquiry import InquiryAgent
 from review_sheep.intent import IntentClassifier
 from review_sheep.report import render_report
-from review_sheep.review import ReviewAgent
+
+logger = logging.getLogger(__name__)
+
+
+class Reviewer(Protocol):
+    """Run a Review regardless of how its changed code was prepared."""
+
+    def review(self, *, repo: str, number: int) -> Review | ReviewError: ...
 
 
 class ChatState(MessagesState):
@@ -43,7 +51,7 @@ def create_chatbot_graph(
     *,
     agent: InquiryAgent,
     classifier: IntentClassifier | None = None,
-    reviewer: ReviewAgent | None = None,
+    reviewer: Reviewer | None = None,
 ) -> CompiledStateGraph[
     ChatState,
     None,
@@ -71,6 +79,12 @@ def create_chatbot_graph(
                     ),
                 }
             )
+        logger.info(
+            "chat_graph.route intent=%s repo=%s pr=%s",
+            decision.intent.value,
+            decision.repo or "none",
+            decision.pull_request_number or "none",
+        )
         return {"intent": decision}
 
     def route(state: ChatState) -> Literal["inquiry", "review", "unrelated"]:
@@ -91,6 +105,7 @@ def create_chatbot_graph(
                 f"Intent classification failed: {decision.error or 'unknown error'}"
             )
 
+        logger.info("chat_graph.inquiry.start")
         answer = agent.invoke(state["messages"])
         response = answer.text or f"Inquiry failed: {answer.error}"
         return {
@@ -109,13 +124,25 @@ def create_chatbot_graph(
                 f"Which pull-request number should I review in {decision.repo}?"
             )
 
+        logger.info(
+            "chat_graph.review.start repo=%s pr=%d",
+            decision.repo,
+            decision.pull_request_number,
+        )
         result = reviewer.review(
             repo=decision.repo,
             number=decision.pull_request_number,
         )
         if isinstance(result, Review):
             response = render_report(result).text
+            logger.info("chat_graph.review.complete findings=%d", len(result.findings))
         else:
+            logger.warning(
+                "chat_graph.review.failed operation=%s type=%s message=%s",
+                result.operation.value,
+                result.error_type,
+                result.message,
+            )
             response = (
                 f"Review failed during {result.operation.value}: "
                 f"{result.error_type}: {result.message}"

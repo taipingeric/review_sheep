@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+import logging
+
 from review_sheep.domain import Finding, Location, Report, Review
+
+logger = logging.getLogger(__name__)
 
 
 def render_report(review: Review) -> Report:
     """Render one Review without changing its structured Findings."""
+    logger.info(
+        "report.render repo=%s pr=%d findings=%d",
+        review.repo,
+        review.pull_request_number,
+        len(review.findings),
+    )
     lines = [
         f"# Review Report: {review.repo}#{review.pull_request_number}",
         "",

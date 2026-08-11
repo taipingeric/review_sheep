@@ -21,6 +21,7 @@ from review_sheep import (
     create_deep_review_agent,
     create_review_agent,
 )
+from review_sheep import lenses as lenses_module
 from review_sheep import review as review_module
 
 
@@ -124,21 +125,21 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
     factory_calls: list[dict[str, Any]] = []
     created_agents: list[FakeLensAgent] = []
     findings_by_schema: dict[Any, dict[str, Any]] = {
-        review_module.CorrectnessResult: {
+        lenses_module.CorrectnessResult: {
             "description": "The caller passes an invalid value.",
             "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
             "severity": "high",
             "confidence": "confirmed",
             "lens": "correctness",
         },
-        review_module.SecurityResult: {
+        lenses_module.SecurityResult: {
             "description": "The changed value crosses a trust boundary.",
             "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
             "severity": "critical",
             "confidence": "likely",
             "lens": "security",
         },
-        review_module.ConventionsAndTestsResult: {
+        lenses_module.ConventionsAndTestsResult: {
             "description": "The changed behavior has no regression test.",
             "location": {"path": "src/caller.py"},
             "severity": "medium",
@@ -166,9 +167,9 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
     assert isinstance(result, Review)
     assert len(factory_calls) == 3
     assert [call["response_format"].schema for call in factory_calls] == [
-        review_module.CorrectnessResult,
-        review_module.SecurityResult,
-        review_module.ConventionsAndTestsResult,
+        lenses_module.CorrectnessResult,
+        lenses_module.SecurityResult,
+        lenses_module.ConventionsAndTestsResult,
     ]
     assert all(
         isinstance(call["response_format"], ToolStrategy) for call in factory_calls
@@ -211,7 +212,7 @@ def test_checkout_diff_tool_rejects_parent_traversal(tmp_path: Path) -> None:
 
 def test_lens_output_schema_rejects_another_lens_identity() -> None:
     with pytest.raises(ValidationError):
-        review_module.SecurityResult.model_validate(
+        lenses_module.SecurityResult.model_validate(
             {
                 "findings": [
                     {

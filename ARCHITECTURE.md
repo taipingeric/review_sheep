@@ -10,8 +10,9 @@ Pydantic models form the trusted boundary around model output.
 The project exposes two capabilities:
 
 1. **Inquiry** answers conversational questions from pull-request metadata.
-2. **Review** inspects a complete local Git checkout pinned to the pull
-   request's head SHA through three independent Review Lenses.
+2. **Review** inspects either an API-fetched Manifest or a complete local Git
+   checkout pinned to the pull request's head SHA through three independent
+   Review Lenses.
 
 ```mermaid
 flowchart LR
@@ -20,6 +21,7 @@ flowchart LR
     Inquiry[LangChain Inquiry agent]
     GitHub[GitHubPullRequestReader]
     Review[Review LangGraph]
+    Manifest[ManifestReviewAgent<br/>GitHub patch snapshot]
     Checkout[GitCheckoutSource<br/>fixed SHA worktree]
     Lenses[Three deepagents]
     GitTools[list_changed_files<br/>get_diff]
@@ -31,7 +33,9 @@ flowchart LR
     Chat --> Inquiry
     Chat --> Review
     Inquiry --> GitHub
+    Review --> Manifest
     Review --> Checkout
+    Manifest --> GitHub
     Checkout --> GitHub
     Review --> Lenses
     Lenses --> GitTools
@@ -42,8 +46,9 @@ flowchart LR
 ```
 
 Inquiry and Review share routing, the GitHub adapter, and model abstractions,
-but not prompts or tools. Metadata questions do not need a checkout; Review
-does not depend on incomplete patches returned by the GitHub files API.
+but not prompts or tools. Metadata questions do not need changed code.
+Interactive Review uses the GitHub files API so it can review arbitrary PRs
+without cloning; CI Review uses a full checkout for complete repository context.
 
 ## Framework responsibilities
 
@@ -51,8 +56,8 @@ does not depend on incomplete patches returned by the GitHub files API.
 
 - `langchain.agents.create_agent` creates the Inquiry agent and intent
   classifier.
-- LangChain tools expose three read-only GitHub metadata operations and two
-  read-only Git operations.
+- LangChain tools expose three read-only GitHub metadata operations, Manifest
+  virtual-file operations, and two read-only Git operations.
 - `BaseChatModel` is the injected model seam.
 - `ToolStrategy` validates each Lens against a Pydantic result type.
 
@@ -71,7 +76,7 @@ START -> IntentClassifier
 or `Review`. The caller passes returned conversation history into the next
 invocation; there is currently no persistent checkpointer.
 
-Review uses a separate graph hidden behind `ReviewAgent.review`:
+CI Review uses a separate graph hidden behind `ReviewAgent.review`:
 
 ```mermaid
 flowchart LR
@@ -85,6 +90,17 @@ flowchart LR
 the local Git worktree. `run_review` invokes every Lens and returns either a
 structured `Review` or a `ReviewError`.
 
+Chat Review uses a parallel implementation behind the same `review(repo,
+number)` interface:
+
+```text
+START -> fetch_snapshot -> prepare_workspace -> run_review -> END
+```
+
+The snapshot node verifies that the PR head did not change while GitHub file
+patches were fetched. The workspace node generates `/manifest.json` and one
+virtual `/diffs/<path>.diff` file per changed path.
+
 ## Module map
 
 | Module | Responsibility |
@@ -93,8 +109,10 @@ structured `Review` or a `ReviewError`.
 | `intent.py` | Build the structured-output intent agent. |
 | `inquiry.py` | Build and run the metadata-only LangChain agent. |
 | `checkout.py` | Validate a fixed Git checkout and provide read-only diff operations. |
-| `review.py` | Compile the Review LangGraph and run the deep Lens agents. |
-| `github.py` | Adapt PyGithub to metadata reads and pull-request revision lookup. |
+| `manifest.py` | Build API snapshots into a Manifest and run the Chat Review LangGraph. |
+| `lenses.py` | Define shared Lens prompts and structured Finding contracts. |
+| `review.py` | Compile fixed-checkout Review and run its deep Lens agents. |
+| `github.py` | Adapt PyGithub to metadata, revisions, and stable patch snapshots. |
 | `domain.py` | Define frozen public data contracts. |
 | `report.py` | Render a human-facing Report without changing the Review. |
 | `providers.py` | Construct shared GitHub and model-provider clients. |
@@ -114,7 +132,24 @@ prompt identifies Review Sheep, allows a tool-free self-introduction, prohibits
 invented changed-code Findings, and asks the agent to answer in the user's
 language.
 
-## Review checkout
+## Chat Manifest
+
+`GitHubPullRequestReader.fetch_snapshot` reads the PR base/head SHA and changed
+file patches, then reads the head SHA again. A changed head aborts that Review
+instead of mixing revisions. `ManifestReviewAgent` converts the stable snapshot
+into an in-memory `ReviewWorkspace` containing:
+
+- `/manifest.json`, an index with repository, PR, base/head SHA, paths, status,
+  line counts, rename source, and virtual diff paths; and
+- `/diffs/<path>.diff`, the GitHub patch for each changed file.
+
+Every Lens receives the same immutable virtual files through `StateBackend`.
+This path requires no local checkout and is the production adapter used by
+`scripts/review_chat.py`. GitHub patches can omit binary changes or unchanged
+context, so Manifest prompts require Findings to remain grounded in the
+available changed-code evidence.
+
+## CI Review checkout
 
 `GitHubPullRequestReader.get_pull_request_revision` returns only the PR's
 `base_sha` and `head_sha`. `GitCheckoutSource` then verifies that:
@@ -137,13 +172,13 @@ to one repository-relative path. Because the checkout contains the complete
 head tree, agents can also read unchanged callers, callees, configuration, and
 tests.
 
-The checkout should be prepared by CI or another trusted caller. In the CLI,
-`REVIEW_CHECKOUT` selects its root and defaults to the current directory. The
-checkout must not contain credentials: deepagents path confinement prevents
+The checkout is prepared by CI or another trusted library caller.
+`REVIEW_CHECKOUT` applies to `scripts/review_pr.py`, not the interactive Chat.
+The checkout must not contain credentials: deepagents path confinement prevents
 leaving the root, but readable files inside the root are intentionally visible
 to the reviewer.
 
-## ReviewAgent flow
+## CI ReviewAgent flow
 
 ```mermaid
 sequenceDiagram
@@ -194,10 +229,10 @@ flowchart TD
     T --> Out
 ```
 
-Lenses run in stable enum order. Within a Lens, independent tool calls are
-requested in the same assistant message so LangChain/deepagents may execute
-them concurrently; dependent calls remain sequential. The configured gateway
-must support parallel tool results.
+Both Review adapters run Lenses in stable enum order. Within a Lens,
+independent tool calls are requested in the same assistant message so
+LangChain/deepagents may execute them concurrently; dependent calls remain
+sequential. The configured gateway must support parallel tool results.
 
 Each Lens receives a `FilesystemBackend` rooted at the checkout with virtual
 path confinement. Deepagents filesystem write permission is denied for all
@@ -211,11 +246,14 @@ deduplication.
 ## Domain contracts
 
 - `PullRequestRevision` identifies the base and head commits GitHub expects.
+- `PullRequestSnapshot` identifies one stable set of GitHub changed-file patches.
+- `Manifest` indexes the virtual diff files built from that snapshot.
+- `ReviewWorkspace` contains one Manifest and its immutable virtual files.
 - `ReviewCheckout` identifies the verified local root and immutable commit
   range.
 - `Finding` combines `Location`, `Severity`, `Confidence`, and `Lens`.
 - `Review` records base/head SHA and the validated Findings.
-- `ReviewError` names either `prepare_checkout` or `run_review`.
+- `ReviewError` names the failed Manifest, checkout, or model stage.
 - `Report` is derived human-facing text.
 - `InquiryAnswer` contains exactly one of `text` or `error`.
 
@@ -225,8 +263,10 @@ deduplication.
 | --- | --- | --- |
 | `PullRequestReader` | `GitHubPullRequestReader` | In-memory metadata reader |
 | `PullRequestRevisionSource` | `GitHubPullRequestReader` | Fixed revision source |
+| `SnapshotSource` | `GitHubPullRequestReader` | Fixed or failing snapshot source |
 | `ReviewCheckoutSource` | `GitCheckoutSource` | Fixed or failing checkout source |
 | `ReviewRunner` | `DeepAgentReviewRunner` | Deterministic runner |
+| Chat `Reviewer` | `ManifestReviewAgent` | Scripted reviewer |
 | `IntentClassifier` | LangChain structured-output agent | Scripted classifier |
 | LangChain model | Provider `BaseChatModel` | Deterministic model |
 
@@ -245,9 +285,9 @@ responsibility.
 ```text
 .env
   -> PyGithub client -> GitHubPullRequestReader
-  -> REVIEW_CHECKOUT -> GitCheckoutSource
+  -> PullRequestSnapshot -> Manifest -> virtual diff files
   -> ChatOpenAI
-  -> InquiryAgent + IntentClassifier + ReviewAgent
+  -> InquiryAgent + IntentClassifier + ManifestReviewAgent
   -> chatbot LangGraph
   -> terminal loop
 ```
@@ -257,6 +297,10 @@ The interactive Chat CLI requires `GITHUB_TOKEN`, `OPENAI_MODEL`, and
 `GITHUB_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, and the selected
 `ANTHROPIC_DEFAULT_{HAIKU|SONNET|OPUS}_MODEL`. Custom headers and model tier are
 optional.
+
+The interactive entrypoint configures `review_sheep.*` console logs at
+`REVIEW_LOG_LEVEL` (default `INFO`). Logs describe intermediate state and counts
+without printing credentials or full source/diff contents.
 
 The reusable `.github/workflows/review-pr.yml` workflow checks out the caller's
 PR head and full history into `review-target`, downloads Review Sheep into the

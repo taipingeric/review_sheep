@@ -19,13 +19,18 @@ from review_sheep.domain import (
     IntentDecision,
     Lens,
     Location,
+    Manifest,
+    ManifestFile,
     PullRequestRevision,
+    PullRequestSnapshot,
     Report,
     Review,
     ReviewCheckout,
     ReviewError,
     ReviewOperation,
+    ReviewWorkspace,
     Severity,
+    SnapshotFile,
 )
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import (
@@ -34,6 +39,13 @@ from review_sheep.inquiry import (
     create_inquiry_agent,
 )
 from review_sheep.intent import IntentClassifier, create_intent_classifier
+from review_sheep.manifest import (
+    ManifestReviewAgent,
+    ManifestReviewRunner,
+    ManifestRunner,
+    SnapshotSource,
+    create_manifest_review_agent,
+)
 from review_sheep.report import render_report
 from review_sheep.review import (
     DeepAgentReviewRunner,
@@ -61,9 +73,15 @@ __all__ = [
     "IntentDecision",
     "Lens",
     "Location",
+    "Manifest",
+    "ManifestFile",
+    "ManifestReviewAgent",
+    "ManifestReviewRunner",
+    "ManifestRunner",
     "PullRequestReader",
     "PullRequestRevision",
     "PullRequestRevisionSource",
+    "PullRequestSnapshot",
     "Report",
     "Review",
     "ReviewAgent",
@@ -72,11 +90,15 @@ __all__ = [
     "ReviewError",
     "ReviewOperation",
     "ReviewRunner",
+    "ReviewWorkspace",
     "Severity",
+    "SnapshotFile",
+    "SnapshotSource",
     "create_chatbot_graph",
     "create_deep_review_agent",
     "create_inquiry_agent",
     "create_intent_classifier",
+    "create_manifest_review_agent",
     "create_review_agent",
     "git_changed_files",
     "git_diff",

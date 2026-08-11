@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from collections.abc import Callable, Sequence
@@ -20,6 +21,9 @@ from review_sheep.providers import (
 )
 from review_sheep.report import render_report
 from review_sheep.review import create_deep_review_agent
+from review_sheep.runtime_logging import configure_console_logging
+
+logger = logging.getLogger(__name__)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -65,8 +69,14 @@ def main(
     reviewer_factory: Callable[..., Any] = create_deep_review_agent,
 ) -> int:
     """Run one Review, print its Markdown Report, and return a CI-safe exit code."""
+    configure_logs = error is None
     output = output or sys.stdout
     error = error or sys.stderr
+    if configure_logs:
+        configure_console_logging(
+            stream=error,
+            level=os.getenv("REVIEW_LOG_LEVEL", "INFO"),
+        )
     load_dotenv(dotenv_path=".env")
     args = _parser().parse_args(argv)
 
@@ -83,6 +93,14 @@ def main(
         )
         base_url = _required(os.getenv("ANTHROPIC_BASE_URL", ""), "ANTHROPIC_BASE_URL")
         custom_headers = os.getenv("ANTHROPIC_CUSTOM_HEADERS", "")
+        logger.info(
+            "ci.config repo=%s pr=%d checkout=%s model_tier=%s model=%s",
+            repo,
+            args.pr_number,
+            checkout_root,
+            args.model_tier,
+            model_name,
+        )
     except RuntimeError as config_error:
         print(f"error: {config_error}", file=error)
         return 2
@@ -123,9 +141,11 @@ def main(
             )
             return 1
         print(render_report(result).text, end="", file=output)
+        logger.info("ci.review.complete findings=%d", len(result.findings))
         return 0
     except Exception as review_error:  # noqa: BLE001 - concise CI boundary
         print(f"error: {type(review_error).__name__}: {review_error}", file=error)
         return 1
     finally:
         client.close()
+        logger.info("ci.stop github_client_closed=true")

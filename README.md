@@ -4,9 +4,9 @@ Review Sheep is a Python library for reading GitHub pull requests through two
 separate capabilities:
 
 - **Inquiry** answers lightweight questions from pull-request metadata.
-- **Review** reads a complete local Git checkout pinned to a pull-request head
-  SHA, asks whole-pull-request Lens agents to inspect it, and returns structured
-  Pydantic Findings.
+- **Review** asks whole-pull-request Lens agents to inspect either a GitHub API
+  Manifest (interactive Chat) or a complete fixed-SHA Git checkout (CI), then
+  returns structured Pydantic Findings.
 
 Review Sheep is read-only. It never submits reviews, posts comments, changes
 labels, or otherwise writes Findings back to GitHub. Publishing a rendered
@@ -70,18 +70,15 @@ from langchain_core.messages import HumanMessage
 
 from review_sheep import (
     ChatState,
-    GitCheckoutSource,
     create_chatbot_graph,
-    create_deep_review_agent,
     create_intent_classifier,
+    create_manifest_review_agent,
 )
-
-checkout = GitCheckoutSource(revisions=github, root="/work/pr-42")
 
 chatbot = create_chatbot_graph(
     agent=inquiry_agent,
     classifier=create_intent_classifier(model=model),
-    reviewer=create_deep_review_agent(source=checkout, model=model),
+    reviewer=create_manifest_review_agent(source=github, model=model),
 )
 state = ChatState(messages=[])
 state = chatbot.invoke(state)
@@ -102,21 +99,22 @@ not invoke either agent and returns only the chatbot's supported scope.
 
 ## Review and Report
 
-Review runs a LangGraph workflow that verifies one clean local checkout against
-GitHub's PR base/head SHAs and invokes the Lens agents. Correctness, security,
-and conventions-and-tests agents share that fixed checkout. They generate the
-changed-file index and diffs from `git diff base...head`, then read complete
-source files directly. No `manifest.json` is generated. Findings retain their
-Location, Severity, Confidence, and originating Lens; overlapping Findings are
-not merged.
+For CI and library callers with a complete checkout, Review runs a LangGraph
+workflow that verifies one clean local checkout against GitHub's PR base/head
+SHAs. Correctness, security, and conventions-and-tests agents share that fixed
+checkout, generate diffs from `git diff base...head`, and read complete source
+files directly. Findings retain their Location, Severity, Confidence, and
+originating Lens; overlapping Findings are not merged.
 
 ```python
 from review_sheep import (
+    GitCheckoutSource,
     Review,
     create_deep_review_agent,
     render_report,
 )
 
+checkout = GitCheckoutSource(revisions=github, root="/work/pr-42")
 reviewer = create_deep_review_agent(source=checkout, model=model)
 result = reviewer.review(repo="acme/widgets", number=42)
 
@@ -142,13 +140,13 @@ uv sync --extra openai --extra dev
 ```
 
 The interactive script reads `GITHUB_TOKEN`, `OPENAI_MODEL`, `OPENAI_API_KEY`,
-and optional `BASE_URL` and `REVIEW_CHECKOUT` from `.env`:
+and optional `BASE_URL` and `REVIEW_LOG_LEVEL` from `.env`:
 
 ```dotenv
 GITHUB_TOKEN=your-read-only-github-token
 OPENAI_MODEL=gpt-5-mini
 OPENAI_API_KEY=your-openai-api-key
-REVIEW_CHECKOUT=/absolute/path/to/a/clean/pr-checkout
+REVIEW_LOG_LEVEL=INFO
 # BASE_URL=https://your-compatible-endpoint/v1
 ```
 
@@ -174,11 +172,17 @@ You: quit
 ```
 
 The GitHub token must be able to read the target repository; private
-repositories require corresponding read access. Before a changed-code Review,
-the configured checkout must have the PR head SHA at `HEAD`, contain the PR base
-commit, and have no tracked or untracked changes. CI can prepare that checkout
-before starting the agent. Both routes are read-only and never post reviews,
-comments, or Findings to GitHub.
+repositories require corresponding read access. For changed-code Review, Chat
+fetches the PR files from GitHub, verifies that the head SHA stayed stable, and
+creates an in-memory `/manifest.json` plus `/diffs/<path>.diff` files. It does
+not clone the target repository and does not require `REVIEW_CHECKOUT`.
+
+Progress logs go to stderr. `INFO` shows intent routing, GitHub snapshot,
+Manifest construction, each Lens, Finding counts, and Report rendering. Set
+`REVIEW_LOG_LEVEL=DEBUG` to also print Manifest paths, patch sizes, tool results,
+and structured Findings. Credentials and complete source/diff contents are not
+logged. Both Chat routes remain read-only and never post reviews, comments, or
+Findings to GitHub.
 
 ## GitHub Actions PR Review
 

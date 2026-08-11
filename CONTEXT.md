@@ -52,7 +52,18 @@ _Avoid_: aspect, dimension, category, pass
 A clean local Git worktree whose `HEAD` is exactly the pull request's fixed head
 SHA and which contains its base commit. Every Lens reads source and generates
 diffs from this same checkout.
-_Avoid_: snapshot, workspace, manifest, clone
+_Avoid_: clone, repository copy
+
+**Manifest**:
+The immutable index generated for an interactive Chat Review from one stable
+GitHub changed-file snapshot. It records base/head SHA and points every changed
+path to a virtual diff file shared by all Lenses.
+_Avoid_: checkout, report, result
+
+**Review Workspace**:
+One Manifest and its in-memory virtual diff files. It is the changed-code input
+used by Chat Review when no Review Checkout exists.
+_Avoid_: checkout, worktree, repository
 
 **Inquiry**:
 A question about pull requests answered from GitHub metadata alone, producing no

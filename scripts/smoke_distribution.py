@@ -23,6 +23,7 @@ from review_sheep import (
     create_chatbot_graph,
     create_inquiry_agent,
     create_intent_classifier,
+    create_manifest_review_agent,
     create_review_agent,
     render_report,
 )
@@ -159,6 +160,7 @@ class DeterministicReviewRunner:
 
 def main() -> None:
     assert callable(ci_main)
+    assert callable(create_manifest_review_agent)
     inquiry_agent = create_inquiry_agent(
         model=DeterministicModel(),
         github=UnusedGitHubReader(),

@@ -5,7 +5,12 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from review_sheep import GitHubPullRequestReader, PullRequestRevision
+from review_sheep import (
+    GitHubPullRequestReader,
+    PullRequestRevision,
+    PullRequestSnapshot,
+    SnapshotFile,
+)
 
 
 class FakeUser(BaseModel):
@@ -229,4 +234,45 @@ def test_reader_returns_pull_request_base_and_head_revisions() -> None:
         number=42,
         base_sha="base123",
         head_sha="abc123",
+    )
+
+
+def test_reader_fetches_one_stable_manifest_snapshot() -> None:
+    changed_file = SimpleNamespace(
+        filename="src/example.py",
+        status="modified",
+        additions=2,
+        deletions=1,
+        patch="@@ -1 +1,2 @@\n-old\n+new\n+line",
+        previous_filename=None,
+    )
+    pull = SimpleNamespace(
+        number=42,
+        base=SimpleNamespace(sha="base123"),
+        head=SimpleNamespace(sha="head456"),
+        get_files=lambda: [changed_file],
+    )
+    repository = FakeRepository([], pull_details=pull)
+    reader = GitHubPullRequestReader(
+        client=FakeGithubClient(repository),
+        default_repo="acme/widgets",
+    )
+
+    snapshot = reader.fetch_snapshot(repo="", number=42)
+
+    assert repository.requested_pulls == [42, 42]
+    assert snapshot == PullRequestSnapshot(
+        repo="acme/widgets",
+        number=42,
+        base_sha="base123",
+        head_sha="head456",
+        files=[
+            SnapshotFile(
+                path="src/example.py",
+                status="modified",
+                additions=2,
+                deletions=1,
+                patch="@@ -1 +1,2 @@\n-old\n+new\n+line",
+            )
+        ],
     )
