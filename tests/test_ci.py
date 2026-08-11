@@ -197,7 +197,15 @@ def test_reusable_workflow_keeps_tooling_outside_the_review_checkout() -> None:
     assert "path: review-target" in workflow
     assert "path: review-sheep" in workflow
     assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
-    assert "ANTHROPIC_DEFAULT_SONNET_MODEL" in workflow
+    assert (
+        "ANTHROPIC_BASE_URL: "
+        "${{ inputs.anthropic_base_url || secrets.ANTHROPIC_BASE_URL }}" in workflow
+    )
+    assert (
+        "ANTHROPIC_DEFAULT_SONNET_MODEL: "
+        "${{ inputs.sonnet_model || secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}"
+        in workflow
+    )
     assert "python scripts/review_pr.py" in workflow
 
 
@@ -207,8 +215,16 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert "pull_request:" in workflow
     assert "uses: ./.github/workflows/review-pr.yml" in workflow
     assert "review_sheep_ref: ${{ github.event.pull_request.head.sha }}" in workflow
-    assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
-    assert "ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}" in workflow
+    assert (
+        "ANTHROPIC_AUTH_TOKEN: "
+        "${{ secrets.COP_KIRO_AUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
+    )
+    assert (
+        "anthropic_base_url: "
+        "${{ vars.COP_KIRO_BASE_URL || vars.ANTHROPIC_BASE_URL }}" in workflow
+    )
+    assert "sonnet_model:" in workflow
+    assert "claude-sonnet-4-6" in workflow
     assert "head.repo.full_name == github.repository" in workflow
 
 

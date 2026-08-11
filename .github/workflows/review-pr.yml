@@ -18,13 +18,33 @@ on:
         required: false
         default: ""
         type: string
+      anthropic_base_url:
+        description: Non-secret Anthropic-compatible gateway endpoint.
+        required: false
+        default: ""
+        type: string
+      haiku_model:
+        description: Gateway model ID for the Haiku tier.
+        required: false
+        default: ""
+        type: string
+      opus_model:
+        description: Gateway model ID for the Opus tier.
+        required: false
+        default: ""
+        type: string
+      sonnet_model:
+        description: Gateway model ID for the Sonnet tier.
+        required: false
+        default: ""
+        type: string
     secrets:
       ANTHROPIC_AUTH_TOKEN:
         description: Bearer token for the Anthropic-compatible gateway.
         required: true
       ANTHROPIC_BASE_URL:
-        description: Anthropic-compatible gateway endpoint.
-        required: true
+        description: Secret gateway endpoint fallback when the input is empty.
+        required: false
       ANTHROPIC_CUSTOM_HEADERS:
         description: Optional newline-separated custom request headers.
         required: false
@@ -76,11 +96,11 @@ jobs:
         working-directory: review-sheep
         env:
           ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
-          ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+          ANTHROPIC_BASE_URL: ${{ inputs.anthropic_base_url || secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
-          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
-          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_OPUS_MODEL }}
-          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model || secrets.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
+          ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.opus_model || secrets.ANTHROPIC_DEFAULT_OPUS_MODEL }}
+          ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.sonnet_model || secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/review-target
           REVIEW_INSTRUCTIONS: ${{ inputs.instructions }}
