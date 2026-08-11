@@ -14,6 +14,9 @@ from pydantic import SecretStr
 
 logger = logging.getLogger(__name__)
 
+_GATEWAY_CONNECT_TIMEOUT_SECONDS = 10.0
+_GATEWAY_RESPONSE_TIMEOUT_SECONDS = 600.0
+
 
 class ModelFactory(Protocol):
     def __call__(
@@ -42,6 +45,20 @@ class _AuthTokenChatAnthropic(ChatAnthropic):
         params = dict(super()._client_params)
         params.pop("api_key", None)
         params["auth_token"] = self.auth_token.get_secret_value()
+        if params.get("timeout") is None:
+            # ChatAnthropic passes ``None`` through to the Anthropic SDK by
+            # default, disabling HTTPX's granular timeout policy. A dead
+            # gateway can then wait for the operating system TCP timeout
+            # (roughly 20 minutes on GitHub-hosted runners). Keep long model
+            # responses valid while failing unreachable gateways promptly.
+            # HTTPX accepts (connect, read, write, pool). Keep this value as a
+            # tuple because LangChain uses it as part of its cached-client key.
+            params["timeout"] = (
+                _GATEWAY_CONNECT_TIMEOUT_SECONDS,
+                _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
+                _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
+                _GATEWAY_CONNECT_TIMEOUT_SECONDS,
+            )
         return params
 
 
@@ -84,10 +101,13 @@ def anthropic_model(
     """Create a ChatAnthropic model from Claude Code gateway conventions."""
     headers = parse_anthropic_custom_headers(custom_headers)
     logger.info(
-        "provider.anthropic.create model=%s base_url=%s custom_header_count=%d",
+        "provider.anthropic.create model=%s base_url=%s custom_header_count=%d "
+        "connect_timeout_seconds=%.0f response_timeout_seconds=%.0f",
         model,
         base_url,
         len(headers),
+        _GATEWAY_CONNECT_TIMEOUT_SECONDS,
+        _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
     )
     return _AuthTokenChatAnthropic.model_validate(
         {

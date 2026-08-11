@@ -270,6 +270,13 @@ from drifting independently. Do not change this workflow to
 authentication path. `ANTHROPIC_CUSTOM_HEADERS` follows Claude Code's
 newline-separated `Name: Value` convention.
 
+Gateway connections use a 10-second connect timeout with the Anthropic SDK's
+normal retries, while model responses may run for up to 10 minutes. A
+`ConnectTimeout` therefore indicates that the gateway cannot be reached from
+the GitHub runner; it is not a model-generation timeout. Private gateways need
+a self-hosted runner with network access or an endpoint reachable from GitHub's
+hosted runners.
+
 The reusable workflow checks out the exact PR head with full Git history, so
 `GitCheckoutSource` can verify the head SHA and resolve the base commit before
 any Lens runs.
