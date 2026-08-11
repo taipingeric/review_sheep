@@ -102,9 +102,10 @@ not invoke either agent and returns only the chatbot's supported scope.
 For CI and library callers with a complete checkout, Review runs a LangGraph
 workflow that verifies one clean local checkout against GitHub's PR base/head
 SHAs. Correctness, security, and conventions-and-tests agents share that fixed
-checkout, generate diffs from `git diff base...head`, and read complete source
-files directly. Findings retain their Location, Severity, Confidence, and
-originating Lens; overlapping Findings are not merged.
+checkout and run concurrently. They generate diffs from `git diff
+base...head` and read complete source files directly. Findings retain their
+Location, Severity, Confidence, and originating Lens; results are merged in
+stable Lens order and overlapping Findings are not merged.
 
 ```python
 from review_sheep import (

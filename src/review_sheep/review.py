@@ -28,6 +28,7 @@ from review_sheep.lenses import (
     LENS_RESULT_SCHEMAS,
     LENS_SYSTEM_PROMPTS,
     PARALLEL_TOOL_USE_PROMPT,
+    run_lenses_in_parallel,
     validate_lens_findings,
 )
 
@@ -84,9 +85,7 @@ class DeepAgentReviewRunner:
             checkout.base_sha,
             checkout.head_sha,
         )
-        findings: list[Finding] = []
-        for lens in Lens:
-            findings.extend(self._run_lens(lens, checkout))
+        findings = run_lenses_in_parallel(lambda lens: self._run_lens(lens, checkout))
         logger.info("checkout.review.complete findings=%d", len(findings))
         return findings
 

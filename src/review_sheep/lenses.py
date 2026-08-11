@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
+from contextvars import copy_context
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from review_sheep.domain import Finding, Lens
+
+logger = logging.getLogger(__name__)
 
 PARALLEL_TOOL_USE_PROMPT = (
     "When multiple independent tool calls are needed, call them in parallel in the "
@@ -82,6 +88,24 @@ LENS_SYSTEM_PROMPTS = {
         "output item must use the conventions-and-tests lens."
     ),
 }
+
+
+def run_lenses_in_parallel(
+    run_lens: Callable[[Lens], list[Finding]],
+) -> list[Finding]:
+    """Run independent Lenses concurrently and flatten in stable Lens order."""
+    lenses = list(Lens)
+    logger.info("lenses.parallel.start count=%d", len(lenses))
+    with ThreadPoolExecutor(
+        max_workers=len(lenses),
+        thread_name_prefix="review-sheep-lens",
+    ) as executor:
+        futures: dict[Lens, Future[list[Finding]]] = {
+            lens: executor.submit(copy_context().run, run_lens, lens) for lens in lenses
+        }
+        findings = [finding for lens in lenses for finding in futures[lens].result()]
+    logger.info("lenses.parallel.complete findings=%d", len(findings))
+    return findings
 
 
 def validate_lens_findings(lens: Lens, payload: Any) -> list[Finding]:

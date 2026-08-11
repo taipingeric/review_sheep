@@ -166,11 +166,11 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
 
     assert isinstance(result, Review)
     assert len(factory_calls) == 3
-    assert [call["response_format"].schema for call in factory_calls] == [
+    assert {call["response_format"].schema for call in factory_calls} == {
         lenses_module.CorrectnessResult,
         lenses_module.SecurityResult,
         lenses_module.ConventionsAndTestsResult,
-    ]
+    }
     assert all(
         isinstance(call["response_format"], ToolStrategy) for call in factory_calls
     )

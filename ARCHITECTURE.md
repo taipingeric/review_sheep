@@ -215,7 +215,6 @@ flowchart TD
     Checkout -. same checkout .-> C
     Checkout -. same checkout .-> S
     Checkout -. same checkout .-> T
-    C -->|then| S -->|then| T
     C --> Index
     C --> Diff
     C --> Read
@@ -230,10 +229,13 @@ flowchart TD
     T --> Out
 ```
 
-Both Review adapters run Lenses in stable enum order. Within a Lens,
-independent tool calls are requested in the same assistant message so
-LangChain/deepagents may execute them concurrently; dependent calls remain
-sequential. The configured gateway must support parallel tool results.
+Both Review adapters start all three Lenses concurrently. Each worker receives
+a copy of the current tracing context, so Langfuse records sibling Lens
+observations under the same turn. Findings are flattened afterward in stable
+`correctness`, `security`, `conventions-and-tests` order. Within a Lens,
+independent tool calls are requested in the same assistant message;
+dependent calls remain sequential. The configured gateway must support
+concurrent model requests and parallel tool results.
 
 Each Lens receives a `FilesystemBackend` rooted at the checkout with virtual
 path confinement. Deepagents filesystem write permission is denied for all

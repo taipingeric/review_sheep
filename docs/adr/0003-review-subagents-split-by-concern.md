@@ -11,3 +11,7 @@ undiscoverable, since no single subagent would ever see both sides.
 Each lens carries the whole pull request, so very large pull requests stress a
 single subagent's context. The architecture keeps room to subdivide within a lens
 by file when that happens; the MVP does not.
+
+The three Lenses run concurrently because they share no mutable state or data
+dependency. Each worker receives a copied tracing context; after completion,
+Findings are flattened in stable Lens order to keep Reports deterministic.

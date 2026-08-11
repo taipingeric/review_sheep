@@ -31,6 +31,7 @@ from review_sheep.lenses import (
     ConventionsAndTestsResult,
     CorrectnessResult,
     SecurityResult,
+    run_lenses_in_parallel,
     validate_lens_findings,
 )
 
@@ -97,9 +98,7 @@ class ManifestReviewRunner:
             workspace.manifest.pull_request_number,
             len(workspace.manifest.files),
         )
-        findings: list[Finding] = []
-        for lens in Lens:
-            findings.extend(self._run_lens(lens, workspace))
+        findings = run_lenses_in_parallel(lambda lens: self._run_lens(lens, workspace))
         logger.info("manifest.review.complete findings=%d", len(findings))
         return findings
 
