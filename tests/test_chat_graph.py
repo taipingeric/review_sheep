@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -16,8 +17,11 @@ from review_sheep import (
     InquiryAnswer,
     InquiryChatState,
     IntentDecision,
+    ManifestReviewAgent,
+    PullRequestSnapshot,
     Review,
     ReviewCheckout,
+    ReviewWorkspace,
     create_chatbot_graph,
     create_inquiry_agent,
     create_review_agent,
@@ -120,6 +124,38 @@ class EmptyCheckoutSource:
 class EmptyReviewRunner:
     def run(self, checkout: ReviewCheckout) -> list[Finding]:
         return []
+
+
+class EmptySnapshotSource:
+    def fetch_snapshot(self, *, repo: str, number: int) -> PullRequestSnapshot:
+        return PullRequestSnapshot(
+            repo=repo,
+            number=number,
+            base_sha="base123",
+            head_sha="abc123",
+            files=[],
+        )
+
+
+class EmptyManifestRunner:
+    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
+        return []
+
+
+class RecordingChainHandler(BaseCallbackHandler):
+    def __init__(self) -> None:
+        self.names: list[str] = []
+
+    def on_chain_start(
+        self,
+        serialized: dict[str, Any],
+        inputs: dict[str, Any],
+        *,
+        name: str | None = None,
+        **kwargs: Any,
+    ) -> None:
+        if name:
+            self.names.append(name)
 
 
 def test_chatbot_graph_routes_conversation_through_the_inquiry_agent() -> None:
@@ -255,6 +291,39 @@ Findings: 0
 No Findings.
 """
     )
+
+
+def test_chat_trace_callback_propagates_into_manifest_review_graph() -> None:
+    handler = RecordingChainHandler()
+    reviewer = ManifestReviewAgent(
+        source=EmptySnapshotSource(),
+        runner=EmptyManifestRunner(),
+    )
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(responses=[]),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(
+                intent=ChatIntent.REVIEW,
+                repo="langchain-ai/langgraph",
+                pull_request_number=8569,
+            )
+        ),
+        reviewer=reviewer,
+    )
+
+    result = chatbot.invoke(
+        {"messages": [HumanMessage(content="Review langchain-ai/langgraph#8569")]},
+        config={
+            "callbacks": [handler],
+            "metadata": {"langfuse_session_id": "session-123"},
+        },
+    )
+
+    assert isinstance(result["review"], Review)
+    assert {"fetch_snapshot", "prepare_workspace", "run_review"}.issubset(handler.names)
 
 
 def test_chatbot_graph_does_not_answer_an_unrelated_message() -> None:

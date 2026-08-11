@@ -4,6 +4,7 @@ from io import StringIO
 from typing import Any
 
 from langchain_core.callbacks import CallbackManagerForLLMRun
+from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -79,6 +80,7 @@ def _configure(monkeypatch: Any) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "test-token")
     monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", "false")
 
 
 def test_chat_reports_github_client_startup_failure(monkeypatch: Any) -> None:
@@ -194,3 +196,43 @@ def test_chat_routes_each_question_through_inquiry_agent_and_langgraph(
     )
     assert errors.getvalue() == ""
     assert github.closed is True
+
+
+class RecordingTraceHandler(BaseCallbackHandler):
+    def __init__(self) -> None:
+        self.metadata: list[dict[str, Any]] = []
+
+    def on_chain_start(
+        self,
+        serialized: dict[str, Any],
+        inputs: dict[str, Any],
+        *,
+        metadata: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        self.metadata.append(metadata or {})
+
+
+def test_chat_traces_each_user_turn_as_one_langgraph_session(
+    monkeypatch: Any,
+) -> None:
+    _configure(monkeypatch)
+    handler = RecordingTraceHandler()
+    prompts = iter(["Who are you?", "quit"])
+
+    exit_code = main(
+        input_fn=lambda _: next(prompts),
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: FakeGithubClient(),
+        model_factory=lambda **_: DeterministicInquiryModel(),
+        tracing_factory=lambda: handler,
+        tracing_flush=lambda **_: None,
+    )
+
+    assert exit_code == 0
+    traced = [row for row in handler.metadata if "langfuse_session_id" in row]
+    assert len(traced) > 1
+    assert {row["review_sheep_turn"] for row in traced} == {1}
+    assert len({row["langfuse_session_id"] for row in traced}) == 1
+    assert all("review-sheep" in row["langfuse_tags"] for row in traced)

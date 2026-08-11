@@ -27,6 +27,7 @@ from review_sheep import (
     create_review_agent,
     render_report,
 )
+from review_sheep.chat import main as chat_main
 from review_sheep.ci import main as ci_main
 
 
@@ -159,6 +160,7 @@ class DeterministicReviewRunner:
 
 
 def main() -> None:
+    assert callable(chat_main)
     assert callable(ci_main)
     assert callable(create_manifest_review_agent)
     inquiry_agent = create_inquiry_agent(

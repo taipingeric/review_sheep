@@ -148,6 +148,11 @@ OPENAI_MODEL=gpt-5-mini
 OPENAI_API_KEY=your-openai-api-key
 REVIEW_LOG_LEVEL=INFO
 # BASE_URL=https://your-compatible-endpoint/v1
+# Optional Langfuse tracing:
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+LANGFUSE_TRACING_ENVIRONMENT=development
 ```
 
 ```bash
@@ -183,6 +188,19 @@ Manifest construction, each Lens, Finding counts, and Report rendering. Set
 and structured Findings. Credentials and complete source/diff contents are not
 logged. Both Chat routes remain read-only and never post reviews, comments, or
 Findings to GitHub.
+
+Langfuse tracing is optional and automatically activates when both
+`LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are present. Each user turn is a
+`review-sheep-chat-turn` trace; all turns from one terminal process share a
+generated Langfuse session ID. The callback attached to the outer Chat
+LangGraph propagates into intent classification, Inquiry, Manifest Review, and
+the Lens agents. Set `LANGFUSE_TRACING_ENABLED=false` to explicitly disable it.
+The client flushes queued spans before the CLI exits. See the
+[Langfuse LangGraph integration](https://langfuse.com/guides/cookbook/integration_langgraph).
+
+Tracing sends prompts, model responses, graph state, and tool activity to the
+configured Langfuse project. Use a Langfuse deployment and retention policy
+appropriate for the repositories being reviewed.
 
 ## GitHub Actions PR Review
 

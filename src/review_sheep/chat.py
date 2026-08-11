@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import uuid
 from collections.abc import Callable
 from typing import Any, TextIO, cast
 
@@ -18,6 +19,11 @@ from review_sheep.intent import create_intent_classifier
 from review_sheep.manifest import create_manifest_review_agent
 from review_sheep.providers import ModelFactory, github_client, openai_model
 from review_sheep.runtime_logging import configure_console_logging
+from review_sheep.tracing import (
+    create_langfuse_handler,
+    flush_langfuse,
+    langfuse_turn_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +43,8 @@ def main(
     github_factory: Callable[[str], Any] = github_client,
     model_factory: ModelFactory = openai_model,
     reviewer_factory: Callable[..., Any] = create_manifest_review_agent,
+    tracing_factory: Callable[[], Any | None] = create_langfuse_handler,
+    tracing_flush: Callable[..., None] = flush_langfuse,
 ) -> int:
     """Read .env and continuously route Inquiry and Review requests."""
     configure_logs = error is None
@@ -74,6 +82,7 @@ def main(
         )
         return 1
 
+    trace_handler: Any | None = None
     try:
         github = GitHubPullRequestReader(client=client)
         try:
@@ -83,6 +92,7 @@ def main(
                 base_url=base_url,
             )
             logger.info("chat.model.ready model=%s", model_name)
+            trace_handler = tracing_factory()
         except (RuntimeError, ValueError) as config_error:
             print(f"error: {config_error}", file=error)
             return 2
@@ -91,6 +101,9 @@ def main(
         intent_classifier = create_intent_classifier(model=model)
         review_agent = reviewer_factory(source=github, model=model)
         logger.info("chat.agents.ready inquiry=true review=manifest")
+        session_id = uuid.uuid4().hex
+        if trace_handler is not None:
+            logger.info("chat.tracing.enabled session_id=%s", session_id)
         chatbot = create_chatbot_graph(
             agent=inquiry_agent,
             classifier=intent_classifier,
@@ -106,6 +119,7 @@ def main(
         )
         print(f"Bot: {conversation['messages'][-1].content}", file=output)
 
+        turn = 0
         while True:
             try:
                 user_message = input_fn("You: ").strip()
@@ -117,6 +131,7 @@ def main(
                 continue
 
             try:
+                turn += 1
                 logger.info("chat.turn.start characters=%d", len(user_message))
                 conversation["messages"] = [
                     *conversation["messages"],
@@ -124,7 +139,14 @@ def main(
                 ]
                 conversation = cast(
                     ChatState,
-                    chatbot.invoke(conversation),
+                    chatbot.invoke(
+                        conversation,
+                        config=langfuse_turn_config(
+                            handler=trace_handler,
+                            session_id=session_id,
+                            turn=turn,
+                        ),
+                    ),
                 )
                 print(
                     f"Bot: {conversation['messages'][-1].content}",
@@ -144,5 +166,6 @@ def main(
         )
         return 1
     finally:
+        tracing_flush(enabled=trace_handler is not None)
         client.close()
         logger.info("chat.stop github_client_closed=true")

@@ -116,6 +116,7 @@ virtual `/diffs/<path>.diff` file per changed path.
 | `domain.py` | Define frozen public data contracts. |
 | `report.py` | Render a human-facing Report without changing the Review. |
 | `providers.py` | Construct shared GitHub and model-provider clients. |
+| `tracing.py` | Configure optional per-turn Langfuse LangGraph callbacks. |
 | `chat.py` | Assemble production adapters and run the CLI. |
 | `ci.py` | Run one non-interactive Review with CI-safe output and exit codes. |
 
@@ -301,6 +302,12 @@ optional.
 The interactive entrypoint configures `review_sheep.*` console logs at
 `REVIEW_LOG_LEVEL` (default `INFO`). Logs describe intermediate state and counts
 without printing credentials or full source/diff contents.
+
+When Langfuse credentials are configured, `chat.py` attaches one
+`CallbackHandler` to each outer chatbot invocation. LangGraph propagates that
+callback into nested LangChain agents and the Manifest Review graph. One random
+session ID groups all turns in the terminal process, and shutdown flushes the
+Langfuse client. CI Review does not enable Langfuse tracing.
 
 The reusable `.github/workflows/review-pr.yml` workflow checks out the caller's
 PR head and full history into `review-target`, downloads Review Sheep into the
