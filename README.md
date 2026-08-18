@@ -15,7 +15,8 @@ caller and publishes the Report as a pull-request conversation comment.
 
 The implementation uses LangChain agents for model and tool execution, and
 LangGraph for conversational state orchestration. See
-[ARCHITECTURE.md](ARCHITECTURE.md) for the complete design.
+[ARCHITECTURE.md](https://github.com/taipingeric/review_sheep/blob/main/ARCHITECTURE.md)
+for the complete design.
 
 ## Install
 
