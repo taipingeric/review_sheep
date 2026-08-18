@@ -279,9 +279,11 @@ Errors are public data: classifier failures produce `unknown`, Inquiry returns
 `InquiryAnswer(error=...)`, and Review returns a stage-specific `ReviewError`.
 An unrelated turn invokes neither agent.
 
-Review Sheep does not post comments, submit reviews, mutate labels, merge pull
-requests, or modify the Review checkout. Publishing remains a separate caller
-responsibility.
+The Review Sheep library does not post comments, submit reviews, mutate labels,
+merge pull requests, or modify the Review checkout. Publishing remains a
+separate caller responsibility. The bundled GitHub Actions workflow acts as a
+Report sink and upserts one pull-request conversation comment after a successful
+CI Review.
 
 ## Runtime composition
 
@@ -315,7 +317,9 @@ The reusable `.github/workflows/review-pr.yml` workflow checks out the caller's
 PR head and full history into `review-target`, downloads Review Sheep into the
 separate `review-sheep` directory, and invokes `scripts/review_pr.py`. Keeping
 the directories separate prevents dependency installation from making the
-verified Review Checkout dirty.
+verified Review Checkout dirty. After a successful Review, the workflow appends
+the Report to the job summary and uses its scoped `GITHUB_TOKEN` to create or
+update one marker-owned pull-request conversation comment.
 
 Tests use temporary real Git repositories for checkout invariants and diff
 behavior, deterministic adapters for both LangGraphs, and a built-wheel smoke

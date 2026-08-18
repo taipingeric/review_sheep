@@ -60,7 +60,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   review:
@@ -116,3 +116,32 @@ jobs:
             --model-tier "$REVIEW_MODEL_TIER" \
             | tee "$RUNNER_TEMP/review-sheep-report.md"
           cat "$RUNNER_TEMP/review-sheep-report.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish Review Sheep PR comment
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REVIEW_PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          comment_file="$RUNNER_TEMP/review-sheep-comment.md"
+          comment_ids_file="$RUNNER_TEMP/review-sheep-comment-ids.txt"
+          {
+            echo '<!-- review-sheep-report -->'
+            cat "$RUNNER_TEMP/review-sheep-report.md"
+          } > "$comment_file"
+
+          gh api --paginate \
+            "repos/$GITHUB_REPOSITORY/issues/$REVIEW_PR_NUMBER/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- review-sheep-report -->"))) | .id' \
+            > "$comment_ids_file"
+
+          if [[ -s "$comment_ids_file" ]]; then
+            comment_id="$(tail -n 1 "$comment_ids_file")"
+            gh api --method PATCH \
+              "repos/$GITHUB_REPOSITORY/issues/comments/$comment_id" \
+              -F "body=@$comment_file"
+          else
+            gh pr comment "$REVIEW_PR_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --body-file "$comment_file"
+          fi

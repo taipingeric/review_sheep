@@ -192,7 +192,7 @@ def test_reusable_workflow_keeps_tooling_outside_the_review_checkout() -> None:
 
     assert "ref: ${{ github.event.pull_request.head.sha }}" in workflow
     assert "fetch-depth: 0" in workflow
-    assert "pull-requests: read" in workflow
+    assert "pull-requests: write" in workflow
     assert "repository: taipingeric/review_sheep" in workflow
     assert "path: review-target" in workflow
     assert "path: review-sheep" in workflow
@@ -207,6 +207,9 @@ def test_reusable_workflow_keeps_tooling_outside_the_review_checkout() -> None:
         in workflow
     )
     assert "python scripts/review_pr.py" in workflow
+    assert "<!-- review-sheep-report -->" in workflow
+    assert "gh api --method PATCH" in workflow
+    assert 'gh pr comment "$REVIEW_PR_NUMBER"' in workflow
 
 
 def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
@@ -226,6 +229,7 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert "sonnet_model:" in workflow
     assert "claude-sonnet-4-6" in workflow
     assert "head.repo.full_name == github.repository" in workflow
+    assert "pull-requests: write" in workflow
 
 
 def test_ci_can_select_the_opus_gateway_model(monkeypatch: Any, tmp_path: Path) -> None:

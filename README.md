@@ -8,9 +8,10 @@ separate capabilities:
   Manifest (interactive Chat) or a complete fixed-SHA Git checkout (CI), then
   returns structured Pydantic Findings.
 
-Review Sheep is read-only. It never submits reviews, posts comments, changes
+The Review Sheep Python library is read-only. It never submits reviews, changes
 labels, or otherwise writes Findings back to GitHub. Publishing a rendered
-Report is the caller's responsibility.
+Report is the caller's responsibility; the bundled CI workflow is one such
+caller and publishes the Report as a pull-request conversation comment.
 
 The implementation uses LangChain agents for model and tool execution, and
 LangGraph for conversational state orchestration. See
@@ -208,8 +209,9 @@ appropriate for the repositories being reviewed.
 The repository provides a reusable workflow that downloads Review Sheep into a
 directory separate from the PR checkout, installs it with `uv`, and calls the
 non-interactive `scripts/review_pr.py`. The Markdown Report is printed in the
-job log and appended to the GitHub Actions step summary; it is not posted to the
-pull request.
+job log, appended to the GitHub Actions step summary, and published as a
+pull-request conversation comment. Later runs update the existing Review Sheep
+comment instead of creating duplicates.
 
 This repository also contains `.github/workflows/review.yml`, which runs the
 reusable workflow automatically for same-repository pull requests. Its preferred
@@ -242,7 +244,7 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+  pull-requests: write
 
 jobs:
   review:
