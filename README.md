@@ -286,3 +286,15 @@ hosted runners.
 The reusable workflow checks out the exact PR head with full Git history, so
 `GitCheckoutSource` can verify the head SHA and resolve the base commit before
 any Lens runs.
+
+## Publishing to PyPI
+
+`.github/workflows/publish.yml` builds the sdist and wheel with `uv build` and
+uploads them to PyPI whenever a GitHub Release is published, or a `v*` tag is
+pushed. It authenticates with [PyPI Trusted Publishing](https://docs.pypi.org/trusted-publishers/)
+(OIDC), so no PyPI API token is stored as a repository secret.
+
+Before the first release, a repository maintainer must sign in to pypi.org and
+add a pending publisher for the `review-sheep` project pointing at
+`taipingeric/review_sheep` and the `publish.yml` workflow. This is a one-time,
+manual step tied to a PyPI account and cannot be automated.
