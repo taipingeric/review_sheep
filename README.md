@@ -23,13 +23,19 @@ for the complete design.
 Review Sheep requires Python 3.11 or newer.
 
 ```bash
-pip install .
+pip install review-sheep
 ```
 
 For an OpenAI-backed model, install the genuinely optional provider extra:
 
 ```bash
-pip install ".[openai]"
+pip install "review-sheep[openai]"
+```
+
+To install from source instead:
+
+```bash
+pip install .
 ```
 
 ## Inquiry
