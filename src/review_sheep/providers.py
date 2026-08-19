@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from functools import cached_property
-from typing import Any, Protocol
+from functools import cached_property, lru_cache
+from typing import TYPE_CHECKING, Any, Protocol
 
 from github import Auth, Github
-from langchain_anthropic import ChatAnthropic
 from langchain_core.language_models import BaseChatModel
 from pydantic import SecretStr
+
+if TYPE_CHECKING:
+    from langchain_anthropic import ChatAnthropic
 
 logger = logging.getLogger(__name__)
 
@@ -33,33 +35,6 @@ class AnthropicModelFactory(Protocol):
         base_url: str,
         custom_headers: str,
     ) -> str | BaseChatModel: ...
-
-
-class _AuthTokenChatAnthropic(ChatAnthropic):
-    """ChatAnthropic variant that uses the SDK's Bearer auth-token path."""
-
-    auth_token: SecretStr
-
-    @cached_property
-    def _client_params(self) -> dict[str, Any]:
-        params = dict(super()._client_params)
-        params.pop("api_key", None)
-        params["auth_token"] = self.auth_token.get_secret_value()
-        if params.get("timeout") is None:
-            # ChatAnthropic passes ``None`` through to the Anthropic SDK by
-            # default, disabling HTTPX's granular timeout policy. A dead
-            # gateway can then wait for the operating system TCP timeout
-            # (roughly 20 minutes on GitHub-hosted runners). Keep long model
-            # responses valid while failing unreachable gateways promptly.
-            # HTTPX accepts (connect, read, write, pool). Keep this value as a
-            # tuple because LangChain uses it as part of its cached-client key.
-            params["timeout"] = (
-                _GATEWAY_CONNECT_TIMEOUT_SECONDS,
-                _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
-                _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
-                _GATEWAY_CONNECT_TIMEOUT_SECONDS,
-            )
-        return params
 
 
 def github_client(token: str) -> Github:
@@ -91,6 +66,50 @@ def openai_model(*, model: str, api_key: str, base_url: str | None) -> BaseChatM
     )
 
 
+@lru_cache(maxsize=1)
+def _get_auth_token_chat_anthropic_cls() -> type[ChatAnthropic]:
+    """Build the Bearer-auth ChatAnthropic subclass on first use, then cache it.
+
+    ``lru_cache`` gives this a built-in lock, so concurrent first calls (Lens
+    agents can be constructed from a thread pool) can't race to define the
+    class twice.
+    """
+    try:
+        from langchain_anthropic import ChatAnthropic
+    except ImportError as error:
+        raise RuntimeError(
+            "langchain-anthropic is not installed; run uv sync --extra anthropic"
+        ) from error
+
+    class _AuthTokenChatAnthropic(ChatAnthropic):
+        """ChatAnthropic variant that uses the SDK's Bearer auth-token path."""
+
+        auth_token: SecretStr
+
+        @cached_property
+        def _client_params(self) -> dict[str, Any]:
+            params = dict(super()._client_params)
+            params.pop("api_key", None)
+            params["auth_token"] = self.auth_token.get_secret_value()
+            if params.get("timeout") is None:
+                # ChatAnthropic passes ``None`` through to the Anthropic SDK by
+                # default, disabling HTTPX's granular timeout policy. A dead
+                # gateway can then wait for the operating system TCP timeout
+                # (roughly 20 minutes on GitHub-hosted runners). Keep long model
+                # responses valid while failing unreachable gateways promptly.
+                # HTTPX accepts (connect, read, write, pool). Keep this value as a
+                # tuple because LangChain uses it as part of its cached-client key.
+                params["timeout"] = (
+                    _GATEWAY_CONNECT_TIMEOUT_SECONDS,
+                    _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
+                    _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
+                    _GATEWAY_CONNECT_TIMEOUT_SECONDS,
+                )
+            return params
+
+    return _AuthTokenChatAnthropic
+
+
 def anthropic_model(
     *,
     model: str,
@@ -99,6 +118,7 @@ def anthropic_model(
     custom_headers: str,
 ) -> BaseChatModel:
     """Create a ChatAnthropic model from Claude Code gateway conventions."""
+    auth_token_chat_anthropic_cls = _get_auth_token_chat_anthropic_cls()
     headers = parse_anthropic_custom_headers(custom_headers)
     logger.info(
         "provider.anthropic.create model=%s base_url=%s custom_header_count=%d "
@@ -109,7 +129,7 @@ def anthropic_model(
         _GATEWAY_CONNECT_TIMEOUT_SECONDS,
         _GATEWAY_RESPONSE_TIMEOUT_SECONDS,
     )
-    return _AuthTokenChatAnthropic.model_validate(
+    return auth_token_chat_anthropic_cls.model_validate(
         {
             "model": model,
             "auth_token": SecretStr(auth_token),

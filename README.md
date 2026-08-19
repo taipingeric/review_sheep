@@ -32,6 +32,18 @@ For an OpenAI-backed model, install the genuinely optional provider extra:
 pip install "review-sheep[openai]"
 ```
 
+`anthropic_model` and Langfuse tracing have their own extras too:
+
+```bash
+pip install "review-sheep[anthropic]"
+pip install "review-sheep[tracing]"
+```
+
+`langchain-anthropic` is also pulled in transitively today by the
+`deepagents` dependency, so `anthropic_model` works even without the
+`anthropic` extra; declaring it keeps Review Sheep's own dependency contract
+accurate independent of what `deepagents` requires.
+
 To install from source instead:
 
 ```bash
@@ -139,6 +151,27 @@ else:
 
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
+
+## Use Review as a LangChain tool
+
+`review_pull_request_tool` wraps the Manifest Review workflow — fetching a
+GitHub API snapshot, running every Lens, and rendering the Report — behind
+one LangChain tool, so it can be dropped straight into another agent's own
+`tools=[...]` list instead of wiring `GitHubPullRequestReader`,
+`create_manifest_review_agent`, and `render_report` together by hand:
+
+```python
+from review_sheep import GitHubPullRequestReader, review_pull_request_tool
+
+source = GitHubPullRequestReader(client=github)
+tool = review_pull_request_tool(model, source)
+
+my_agent = create_agent(model=model, tools=[*my_tools, tool])
+```
+
+The tool takes `repo` and `number` arguments and returns the rendered
+Markdown Report as a string; a failed Review is returned as descriptive error
+text rather than raised, so the calling agent can reason about or relay it.
 
 ## Try the intent-routed chatbot
 

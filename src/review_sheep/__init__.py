@@ -55,6 +55,7 @@ from review_sheep.review import (
     create_deep_review_agent,
     create_review_agent,
 )
+from review_sheep.tools import review_pull_request_tool
 
 __version__ = "0.1.0"
 
@@ -103,4 +104,5 @@ __all__ = [
     "git_changed_files",
     "git_diff",
     "render_report",
+    "review_pull_request_tool",
 ]

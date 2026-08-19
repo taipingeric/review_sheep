@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 import pytest
 
+from review_sheep import providers as providers_module
 from review_sheep.providers import anthropic_model, parse_anthropic_custom_headers
 
 
@@ -57,3 +59,35 @@ def test_anthropic_model_limits_gateway_connect_time_without_shortening_response
     assert timeout.pool == 10
     assert timeout.read == 600
     assert timeout.write == 600
+
+
+def test_anthropic_model_reuses_the_same_bearer_auth_class_across_calls() -> None:
+    first = anthropic_model(
+        model="gateway-sonnet",
+        auth_token="auth-token",
+        base_url="https://gateway.example.com",
+        custom_headers="",
+    )
+    second = anthropic_model(
+        model="gateway-sonnet",
+        auth_token="auth-token",
+        base_url="https://gateway.example.com",
+        custom_headers="",
+    )
+
+    assert type(first) is type(second)
+
+
+def test_anthropic_model_raises_a_friendly_error_when_the_package_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    providers_module._get_auth_token_chat_anthropic_cls.cache_clear()
+    monkeypatch.setitem(sys.modules, "langchain_anthropic", None)
+
+    with pytest.raises(RuntimeError, match="uv sync --extra anthropic"):
+        anthropic_model(
+            model="gateway-sonnet",
+            auth_token="auth-token",
+            base_url="https://gateway.example.com",
+            custom_headers="",
+        )
