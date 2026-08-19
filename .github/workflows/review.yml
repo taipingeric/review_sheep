@@ -16,11 +16,11 @@ jobs:
       review_sheep_ref: ${{ github.event.pull_request.head.sha }}
       model_tier: ${{ vars.REVIEW_MODEL_TIER || 'sonnet' }}
       instructions: ${{ vars.REVIEW_INSTRUCTIONS }}
-      anthropic_base_url: ${{ vars.COP_KIRO_BASE_URL || vars.ANTHROPIC_BASE_URL }}
-      haiku_model: ${{ vars.COP_KIRO_HAIKU_MODEL || vars.ANTHROPIC_DEFAULT_HAIKU_MODEL || 'claude-haiku-4-5' }}
-      opus_model: ${{ vars.COP_KIRO_OPUS_MODEL || vars.ANTHROPIC_DEFAULT_OPUS_MODEL || 'claude-opus-4-6' }}
-      sonnet_model: ${{ vars.COP_KIRO_SONNET_MODEL || vars.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-6' }}
+      anthropic_base_url: ${{ vars.ANTHROPIC_BASE_URL }}
+      haiku_model: ${{ vars.ANTHROPIC_DEFAULT_HAIKU_MODEL || 'claude-haiku-4-5' }}
+      opus_model: ${{ vars.ANTHROPIC_DEFAULT_OPUS_MODEL || 'claude-opus-4-6' }}
+      sonnet_model: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-6' }}
     secrets:
-      ANTHROPIC_AUTH_TOKEN: ${{ secrets.COP_KIRO_AUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN }}
-      ANTHROPIC_BASE_URL: ${{ secrets.COP_KIRO_BASE_URL || secrets.ANTHROPIC_BASE_URL }}
-      ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.COP_KIRO_CUSTOM_HEADERS || secrets.ANTHROPIC_CUSTOM_HEADERS }}
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}

@@ -254,20 +254,23 @@ pull-request conversation comment. Later runs update the existing Review Sheep
 comment instead of creating duplicates.
 
 This repository also contains `.github/workflows/review.yml`, which runs the
-reusable workflow automatically for same-repository pull requests. Its preferred
-enterprise-style configuration matches the COP/Kiro workflow:
+reusable workflow automatically for same-repository pull requests. Configure
+it with:
 
-- Actions secret `COP_KIRO_AUTH_TOKEN` contains the gateway bearer token;
-- Actions variable `COP_KIRO_BASE_URL` contains the non-secret gateway URL;
-- optional Actions secret `COP_KIRO_CUSTOM_HEADERS` contains `Name: Value` lines;
-- optional Actions variables `COP_KIRO_HAIKU_MODEL`, `COP_KIRO_OPUS_MODEL`, and
-  `COP_KIRO_SONNET_MODEL` override the built-in Claude model IDs; and
+- Actions secret `ANTHROPIC_AUTH_TOKEN` contains the model provider's bearer
+  token;
+- Actions variable `ANTHROPIC_BASE_URL` contains the non-secret gateway URL,
+  if any;
+- optional Actions secret `ANTHROPIC_CUSTOM_HEADERS` contains `Name: Value`
+  lines;
+- optional Actions variables `ANTHROPIC_DEFAULT_HAIKU_MODEL`,
+  `ANTHROPIC_DEFAULT_OPUS_MODEL`, and `ANTHROPIC_DEFAULT_SONNET_MODEL`
+  override the built-in Claude model IDs; and
 - optional Actions variables `REVIEW_MODEL_TIER` (`haiku`, `sonnet`, or `opus`,
   default `sonnet`) and `REVIEW_INSTRUCTIONS` control the Review.
 
-For compatibility, the caller falls back to the existing `ANTHROPIC_*` secrets
-and variables. If the gateway URL is sensitive, store it as `COP_KIRO_BASE_URL`
-under Actions secrets instead of variables; the workflow accepts either source.
+If the gateway URL is sensitive, store it as `ANTHROPIC_BASE_URL` under
+Actions secrets instead of variables; the workflow accepts either source.
 
 Fork pull requests are intentionally skipped because the `pull_request` event
 does not expose repository model secrets to untrusted forks.
@@ -295,15 +298,15 @@ jobs:
       # Use the same full commit SHA as the reusable workflow reference above.
       review_sheep_ref: REVIEW_SHEEP_SHA
       model_tier: sonnet
-      anthropic_base_url: ${{ vars.COP_KIRO_BASE_URL }}
-      haiku_model: ${{ vars.COP_KIRO_HAIKU_MODEL || 'claude-haiku-4-5' }}
-      opus_model: ${{ vars.COP_KIRO_OPUS_MODEL || 'claude-opus-4-6' }}
-      sonnet_model: ${{ vars.COP_KIRO_SONNET_MODEL || 'claude-sonnet-4-6' }}
+      anthropic_base_url: ${{ vars.ANTHROPIC_BASE_URL }}
+      haiku_model: ${{ vars.ANTHROPIC_DEFAULT_HAIKU_MODEL || 'claude-haiku-4-5' }}
+      opus_model: ${{ vars.ANTHROPIC_DEFAULT_OPUS_MODEL || 'claude-opus-4-6' }}
+      sonnet_model: ${{ vars.ANTHROPIC_DEFAULT_SONNET_MODEL || 'claude-sonnet-4-6' }}
       # instructions: Focus on authorization and data integrity.
     secrets:
-      ANTHROPIC_AUTH_TOKEN: ${{ secrets.COP_KIRO_AUTH_TOKEN }}
-      ANTHROPIC_BASE_URL: ${{ secrets.COP_KIRO_BASE_URL }}
-      ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.COP_KIRO_CUSTOM_HEADERS }}
+      ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
+      ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
+      ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
 ```
 
 Replace both `REVIEW_SHEEP_SHA` placeholders with the same full Review Sheep

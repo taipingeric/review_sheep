@@ -219,12 +219,10 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert "uses: ./.github/workflows/review-pr.yml" in workflow
     assert "review_sheep_ref: ${{ github.event.pull_request.head.sha }}" in workflow
     assert (
-        "ANTHROPIC_AUTH_TOKEN: "
-        "${{ secrets.COP_KIRO_AUTH_TOKEN || secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
+        "ANTHROPIC_AUTH_TOKEN: " "${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
     )
     assert (
-        "anthropic_base_url: "
-        "${{ vars.COP_KIRO_BASE_URL || vars.ANTHROPIC_BASE_URL }}" in workflow
+        "anthropic_base_url: " "${{ vars.ANTHROPIC_BASE_URL }}" in workflow
     )
     assert "sonnet_model:" in workflow
     assert "claude-sonnet-4-6" in workflow
