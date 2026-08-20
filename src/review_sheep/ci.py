@@ -9,7 +9,9 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any, TextIO
 
+from langchain_core.runnables.config import ensure_config, set_config_context
 from review_sheep.checkout import GitCheckoutSource
+from review_sheep.config import LangfuseConfig, MLflowConfig
 from review_sheep.domain import Review, ReviewError
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.providers import (
@@ -20,6 +22,11 @@ from review_sheep.providers import (
 from review_sheep.report import render_report
 from review_sheep.review import create_deep_review_agent
 from review_sheep.runtime_logging import configure_console_logging
+from review_sheep.tracing import (
+    ci_review_config,
+    create_tracing_handlers,
+    flush_tracing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +64,21 @@ def _required(value: str, name: str) -> str:
     return resolved
 
 
+def _load_ci_tracing_configs() -> tuple[LangfuseConfig | None, MLflowConfig | None]:
+    """Load optional CI tracing settings without coupling backend failures."""
+    try:
+        langfuse = LangfuseConfig.from_environment()
+    except (RuntimeError, ValueError):
+        logger.exception("ci.tracing.langfuse_configuration_failed")
+        langfuse = None
+    try:
+        mlflow = MLflowConfig.from_environment()
+    except (RuntimeError, ValueError):
+        logger.exception("ci.tracing.mlflow_configuration_failed")
+        mlflow = None
+    return langfuse, mlflow
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -65,6 +87,8 @@ def main(
     github_factory: Callable[[str], Any] = github_client,
     model_factory: AnthropicModelFactory = anthropic_model,
     reviewer_factory: Callable[..., Any] = create_deep_review_agent,
+    tracing_factory: Callable[..., list[Any]] = create_tracing_handlers,
+    tracing_flush: Callable[..., None] = flush_tracing,
 ) -> int:
     """Run one Review, print its Markdown Report, and return a CI-safe exit code."""
     configure_logs = error is None
@@ -102,6 +126,21 @@ def main(
         print(f"error: {config_error}", file=error)
         return 2
 
+    langfuse_config, mlflow_config = _load_ci_tracing_configs()
+    try:
+        trace_handlers = tracing_factory(
+            langfuse=langfuse_config,
+            mlflow=mlflow_config,
+        )
+    except Exception:
+        logger.exception("ci.tracing.initialization_failed")
+        trace_handlers = []
+    trace_config = ci_review_config(
+        handlers=trace_handlers,
+        repo=repo,
+        number=args.pr_number,
+    )
+
     try:
         client = github_factory(github_token)
     except Exception as github_error:  # noqa: BLE001 - concise CI boundary
@@ -126,10 +165,12 @@ def main(
             model=model,
             instructions=args.instructions,
         )
-        result: Review | ReviewError = reviewer.review(
-            repo=repo,
-            number=args.pr_number,
-        )
+        with set_config_context(trace_config or ensure_config()) as context:
+            result: Review | ReviewError = context.run(
+                reviewer.review,
+                repo=repo,
+                number=args.pr_number,
+            )
         if isinstance(result, ReviewError):
             print(
                 f"error: {result.operation.value} failed for "
@@ -144,5 +185,17 @@ def main(
         print(f"error: {type(review_error).__name__}: {review_error}", file=error)
         return 1
     finally:
+        try:
+            tracing_flush(
+                langfuse_enabled=langfuse_config is not None,
+                langfuse_public_key=(
+                    langfuse_config.public_key
+                    if langfuse_config is not None
+                    else None
+                ),
+                mlflow_enabled=mlflow_config is not None,
+            )
+        except Exception:
+            logger.exception("ci.tracing.flush_failed")
         client.close()
         logger.info("ci.stop github_client_closed=true")
