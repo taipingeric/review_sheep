@@ -6,6 +6,8 @@ from typing import Any
 import pytest
 from deepagents.backends import FilesystemBackend
 from langchain.agents.structured_output import ToolStrategy
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import ensure_config
 from pydantic import ValidationError
 
 from review_sheep import (
@@ -76,9 +78,14 @@ class FakeLensAgent:
     def __init__(self, finding: dict[str, Any]) -> None:
         self.finding = finding
         self.calls: list[dict[str, Any]] = []
+        self.configs: list[RunnableConfig] = []
 
-    def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+    def invoke(
+        self,
+        state: dict[str, Any],
+    ) -> dict[str, Any]:
         self.calls.append(state)
+        self.configs.append(ensure_config())
         return {"structured_response": {"findings": [self.finding]}}
 
 
@@ -199,6 +206,61 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
         for agent in created_agents
     )
     assert [finding.lens for finding in result.findings] == list(Lens)
+
+
+def test_deep_review_propagates_trace_config_to_every_lens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkout = _checkout(tmp_path)
+    source = FakeCheckoutSource(checkout)
+    agents: list[FakeLensAgent] = []
+    findings_by_schema: dict[Any, dict[str, Any]] = {
+        lenses_module.CorrectnessResult: {
+            "description": "The caller passes an invalid value.",
+            "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
+            "severity": "high",
+            "confidence": "confirmed",
+            "lens": "correctness",
+        },
+        lenses_module.SecurityResult: {
+            "description": "The changed value crosses a trust boundary.",
+            "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
+            "severity": "critical",
+            "confidence": "likely",
+            "lens": "security",
+        },
+        lenses_module.ConventionsAndTestsResult: {
+            "description": "The changed behavior has no regression test.",
+            "location": {"path": "src/caller.py"},
+            "severity": "medium",
+            "confidence": "confirmed",
+            "lens": "conventions-and-tests",
+        },
+    }
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        agent = FakeLensAgent(findings_by_schema[kwargs["response_format"].schema])
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
+    config: RunnableConfig = {
+        "metadata": {"review_sheep_run_kind": "ci"},
+        "tags": ["review-sheep", "ci", "review"],
+    }
+
+    result = create_deep_review_agent(
+        source=source,
+        model="openai:gpt-test",
+    ).review(repo="acme/widgets", number=42, config=config)
+
+    assert isinstance(result, Review)
+    assert len(agents) == len(Lens)
+    assert all(
+        agent.configs[0]["metadata"]["review_sheep_run_kind"] == "ci"
+        for agent in agents
+    )
+    assert all(agent.configs[0]["tags"] == ["review-sheep", "ci", "review"] for agent in agents)
 
 
 def test_checkout_diff_tool_rejects_parent_traversal(tmp_path: Path) -> None:

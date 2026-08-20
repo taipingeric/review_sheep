@@ -116,7 +116,7 @@ virtual `/diffs/<path>.diff` file per changed path.
 | `domain.py` | Define frozen public data contracts. |
 | `report.py` | Render a human-facing Report without changing the Review. |
 | `providers.py` | Construct shared GitHub and model-provider clients. |
-| `tracing.py` | Configure optional per-turn Langfuse LangGraph callbacks. |
+| `tracing.py` | Configure optional Langfuse and MLflow callbacks for Chat and CI. |
 | `chat.py` | Assemble production adapters and run the CLI. |
 | `ci.py` | Run one non-interactive Review with CI-safe output and exit codes. |
 
@@ -307,11 +307,14 @@ The interactive entrypoint configures `review_sheep.*` console logs at
 `REVIEW_LOG_LEVEL` (default `INFO`). Logs describe intermediate state and counts
 without printing credentials or full source/diff contents.
 
-When Langfuse credentials are configured, `chat.py` attaches one
-`CallbackHandler` to each outer chatbot invocation. LangGraph propagates that
-callback into nested LangChain agents and the Manifest Review graph. One random
-session ID groups all turns in the terminal process, and shutdown flushes the
-Langfuse client. CI Review does not enable Langfuse tracing.
+When tracing credentials are configured, `chat.py` attaches configured
+Langfuse and MLflow callbacks to each outer chatbot invocation. LangGraph
+propagates those callbacks into nested LangChain agents and the Manifest Review
+graph. One random session ID groups all turns in the terminal process. The CI
+entrypoint uses a stable `ci:<repo>#<number>` session ID and propagates the same
+callbacks into its checkout Review graph and Lens agents. Both entrypoints
+flush configured tracing clients during shutdown, and tracing failures are
+logged without replacing the Review result.
 
 The reusable `.github/workflows/review-pr.yml` workflow checks out the caller's
 PR head and full history into `review-target`, downloads Review Sheep into the

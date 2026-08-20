@@ -125,6 +125,30 @@ def tracing_turn_config(
     )
 
 
+def ci_review_config(
+    *, handlers: Sequence[Any], repo: str, number: int
+) -> RunnableConfig | None:
+    """Build one correlated root trace configuration for a CI Review."""
+    if not handlers:
+        return None
+    session_id = f"ci:{repo}#{number}"
+    tags = ["review-sheep", "ci", "review"]
+    return RunnableConfig(
+        callbacks=list(handlers),
+        run_name="review-sheep-ci-review",
+        tags=tags,
+        metadata={
+            "review_sheep_run_kind": "ci",
+            "review_sheep_session_id": session_id,
+            "review_sheep_tags": tags,
+            "review_sheep_repo": repo,
+            "review_sheep_pull_request": number,
+            "langfuse_session_id": session_id,
+            "langfuse_tags": tags,
+        },
+    )
+
+
 def flush_langfuse(*, enabled: bool, public_key: str | None = None) -> None:
     """Flush queued spans before a short-lived CLI exits."""
     if not enabled:

@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import logging
 from pathlib import PurePosixPath
-from typing import Literal, NotRequired, Protocol, TypedDict, cast
+from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from deepagents import create_deep_agent as _create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware.filesystem import FilesystemPermission
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import ensure_config, set_config_context
 from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
@@ -76,7 +78,12 @@ class DeepAgentReviewRunner:
         self._model = model
         self._instructions = instructions.strip()
 
-    def run(self, checkout: ReviewCheckout) -> list[Finding]:
+    def run(
+        self,
+        checkout: ReviewCheckout,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> list[Finding]:
         """Run and concatenate Lens Findings in stable Lens order."""
         logger.info(
             "checkout.review.start repo=%s pr=%d base=%s head=%s",
@@ -85,11 +92,20 @@ class DeepAgentReviewRunner:
             checkout.base_sha,
             checkout.head_sha,
         )
-        findings = run_lenses_in_parallel(lambda lens: self._run_lens(lens, checkout))
+        effective_config = ensure_config(config)
+        findings = run_lenses_in_parallel(
+            lambda lens: self._run_lens(lens, checkout, config=effective_config)
+        )
         logger.info("checkout.review.complete findings=%d", len(findings))
         return findings
 
-    def _run_lens(self, lens: Lens, checkout: ReviewCheckout) -> list[Finding]:
+    def _run_lens(
+        self,
+        lens: Lens,
+        checkout: ReviewCheckout,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> list[Finding]:
         logger.info("checkout.lens.start lens=%s", lens.value)
         agent = _create_deep_agent(
             model=self._model,
@@ -114,7 +130,9 @@ class DeepAgentReviewRunner:
         )
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
-        result = agent.invoke({"messages": [{"role": "user", "content": request}]})
+        state = cast(Any, {"messages": [{"role": "user", "content": request}]})
+        with set_config_context(config or ensure_config()) as context:
+            result = context.run(agent.invoke, state)
         findings = validate_lens_findings(lens, result["structured_response"])
         logger.info(
             "checkout.lens.complete lens=%s findings=%d",
@@ -160,12 +178,19 @@ class ReviewAgent:
     def __init__(self, *, source: ReviewCheckoutSource, runner: ReviewRunner) -> None:
         self._graph = _create_review_graph(source=source, runner=runner)
 
-    def review(self, *, repo: str, number: int) -> Review | ReviewError:
+    def review(
+        self,
+        *,
+        repo: str,
+        number: int,
+        config: RunnableConfig | None = None,
+    ) -> Review | ReviewError:
         """Run one structured Review without writing to GitHub or the checkout."""
         state = cast(
             _ReviewGraphState,
             self._graph.invoke(
-                _ReviewGraphState(repo=repo, pull_request_number=number)
+                _ReviewGraphState(repo=repo, pull_request_number=number),
+                config=ensure_config(config),
             ),
         )
         return state["result"]
