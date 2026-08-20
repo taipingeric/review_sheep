@@ -3,40 +3,35 @@
 from __future__ import annotations
 
 import logging
-import os
 from typing import Any
 
 from langchain_core.runnables import RunnableConfig
 
+from review_sheep.config import LangfuseConfig
+
 logger = logging.getLogger(__name__)
 
-_FALSE_VALUES = {"0", "false", "no", "off"}
 
-
-def create_langfuse_handler() -> Any | None:
-    """Create a LangChain callback when Langfuse is configured."""
-    enabled = os.getenv("LANGFUSE_TRACING_ENABLED", "").strip().lower()
-    if enabled in _FALSE_VALUES:
+def create_langfuse_handler(config: LangfuseConfig | None) -> Any | None:
+    """Create a LangChain callback from explicit Langfuse settings."""
+    if config is None:
         logger.info("tracing.langfuse.disabled")
         return None
 
-    public_key = os.getenv("LANGFUSE_PUBLIC_KEY", "").strip()
-    secret_key = os.getenv("LANGFUSE_SECRET_KEY", "").strip()
-    if not public_key and not secret_key and not enabled:
-        logger.info("tracing.langfuse.not_configured")
-        return None
-    if not public_key or not secret_key:
-        raise RuntimeError(
-            "LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must both be configured"
-        )
-
+    from langfuse import Langfuse
     from langfuse.langchain import CallbackHandler
 
-    handler = CallbackHandler()
+    Langfuse(
+        public_key=config.public_key,
+        secret_key=config.secret_key,
+        base_url=config.base_url,
+        environment=config.environment,
+    )
+    handler = CallbackHandler(public_key=config.public_key)
     logger.info(
         "tracing.langfuse.ready base_url=%s environment=%s",
-        os.getenv("LANGFUSE_BASE_URL", "https://cloud.langfuse.com"),
-        os.getenv("LANGFUSE_TRACING_ENVIRONMENT", "default"),
+        config.base_url,
+        config.environment,
     )
     return handler
 
@@ -58,14 +53,14 @@ def langfuse_turn_config(
     )
 
 
-def flush_langfuse(*, enabled: bool) -> None:
+def flush_langfuse(*, enabled: bool, public_key: str | None = None) -> None:
     """Flush queued spans before a short-lived CLI exits."""
     if not enabled:
         return
     try:
         from langfuse import get_client
 
-        get_client().flush()
+        get_client(public_key=public_key).flush()
         logger.info("tracing.langfuse.flushed")
     except Exception:  # tracing must not replace the chatbot's result
         logger.exception("tracing.langfuse.flush_failed")

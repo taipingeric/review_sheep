@@ -1,44 +1,29 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
+from review_sheep.config import LangfuseConfig
 from review_sheep.tracing import create_langfuse_handler, langfuse_turn_config
 
 
-def _clear_langfuse(monkeypatch: Any) -> None:
-    for name in (
-        "LANGFUSE_TRACING_ENABLED",
-        "LANGFUSE_PUBLIC_KEY",
-        "LANGFUSE_SECRET_KEY",
-    ):
-        monkeypatch.delenv(name, raising=False)
+def test_langfuse_is_optional_when_configuration_is_absent() -> None:
+    assert create_langfuse_handler(None) is None
 
 
-def test_langfuse_is_optional_when_credentials_are_absent(monkeypatch: Any) -> None:
-    _clear_langfuse(monkeypatch)
-
-    assert create_langfuse_handler() is None
-
-
-def test_langfuse_rejects_partial_credentials(monkeypatch: Any) -> None:
-    _clear_langfuse(monkeypatch)
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
-
-    with pytest.raises(RuntimeError, match="must both be configured"):
-        create_langfuse_handler()
+def test_langfuse_rejects_partial_credentials() -> None:
+    with pytest.raises(ValueError, match="secret_key is required"):
+        LangfuseConfig(public_key="pk-lf-test", secret_key="")
 
 
-def test_langfuse_handler_uses_sdk_v4_environment_configuration(
-    monkeypatch: Any,
-) -> None:
-    _clear_langfuse(monkeypatch)
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-lf-test")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-lf-test")
-    monkeypatch.setenv("LANGFUSE_BASE_URL", "http://127.0.0.1:3000")
-
-    handler = create_langfuse_handler()
+def test_langfuse_handler_uses_injected_configuration() -> None:
+    handler = create_langfuse_handler(
+        LangfuseConfig(
+            public_key="pk-lf-test",
+            secret_key="sk-lf-test",
+            base_url="http://127.0.0.1:3000",
+            environment="test",
+        )
+    )
 
     assert handler is not None
     assert handler.__class__.__module__.startswith("langfuse")
