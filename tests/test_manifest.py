@@ -5,6 +5,8 @@ from typing import Any
 import pytest
 from deepagents.backends import StateBackend
 from langchain.agents.structured_output import ToolStrategy
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import ensure_config
 
 from review_sheep import (
     Finding,
@@ -40,10 +42,37 @@ class FakeLensAgent:
     def __init__(self, finding: dict[str, Any]) -> None:
         self.finding = finding
         self.calls: list[dict[str, Any]] = []
+        self.configs: list[RunnableConfig | None] = []
 
-    def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+    def invoke(
+        self,
+        state: dict[str, Any],
+        config: RunnableConfig | None = None,
+    ) -> dict[str, Any]:
         self.calls.append(state)
+        self.configs.append(config or ensure_config())
         return {"structured_response": {"findings": [self.finding]}}
+
+
+def _fake_lens_agent(
+    schema: Any, agents: list[FakeLensAgent]
+) -> FakeLensAgent:
+    lens = {
+        manifest_module.CorrectnessResult: "correctness",
+        manifest_module.SecurityResult: "security",
+        manifest_module.ConventionsAndTestsResult: "conventions-and-tests",
+    }[schema]
+    agent = FakeLensAgent(
+        {
+            "description": f"Finding from {lens}.",
+            "location": {"path": "src/example.py"},
+            "severity": "medium",
+            "confidence": "likely",
+            "lens": lens,
+        }
+    )
+    agents.append(agent)
+    return agent
 
 
 class DynamicSnapshotSource:
@@ -97,23 +126,7 @@ def test_manifest_review_runs_every_lens_over_the_same_virtual_files(
 
     def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
         factory_calls.append(kwargs)
-        schema = kwargs["response_format"].schema
-        lens = {
-            manifest_module.CorrectnessResult: "correctness",
-            manifest_module.SecurityResult: "security",
-            manifest_module.ConventionsAndTestsResult: "conventions-and-tests",
-        }[schema]
-        agent = FakeLensAgent(
-            {
-                "description": f"Finding from {lens}.",
-                "location": {"path": "src/example.py"},
-                "severity": "medium",
-                "confidence": "likely",
-                "lens": lens,
-            }
-        )
-        agents.append(agent)
-        return agent
+        return _fake_lens_agent(kwargs["response_format"].schema, agents)
 
     monkeypatch.setattr(manifest_module, "_create_deep_agent", fake_create_deep_agent)
 
@@ -150,6 +163,35 @@ def test_manifest_review_runs_every_lens_over_the_same_virtual_files(
         assert "Focus on regressions." in state["messages"][0]["content"]
     assert snapshots[0] == snapshots[1] == snapshots[2]
     assert '"base_sha": "base123"' in snapshots[0]["/manifest.json"]
+
+
+def test_manifest_review_propagates_trace_config_to_every_lens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = FakeSnapshotSource(_snapshot())
+    agents: list[FakeLensAgent] = []
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        return _fake_lens_agent(kwargs["response_format"].schema, agents)
+
+    monkeypatch.setattr(manifest_module, "_create_deep_agent", fake_create_deep_agent)
+    config: RunnableConfig = {
+        "metadata": {"review_sheep_turn": "turn-17"},
+        "tags": ["chat"],
+    }
+
+    result = create_manifest_review_agent(
+        source=source,
+        model="openai:gpt-test",
+    ).review(repo="acme/widgets", number=42, config=config)
+
+    assert isinstance(result, Review)
+    assert len(agents) == len(Lens)
+    assert all(
+        agent.configs[0]["metadata"]["review_sheep_turn"] == "turn-17"
+        for agent in agents
+    )
+    assert all(agent.configs[0]["tags"] == ["chat"] for agent in agents)
 
 
 def test_manifest_review_returns_snapshot_failures_as_data() -> None:

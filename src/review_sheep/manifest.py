@@ -10,6 +10,8 @@ from deepagents.backends import StateBackend
 from deepagents.backends.utils import create_file_data
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import ensure_config, set_config_context
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -90,7 +92,12 @@ class ManifestReviewRunner:
         self._model = model
         self._instructions = instructions.strip()
 
-    def run(self, workspace: ReviewWorkspace) -> list[Finding]:
+    def run(
+        self,
+        workspace: ReviewWorkspace,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> list[Finding]:
         """Run and concatenate Lens Findings in stable Lens order."""
         logger.info(
             "manifest.review.start repo=%s pr=%d files=%d",
@@ -98,11 +105,20 @@ class ManifestReviewRunner:
             workspace.manifest.pull_request_number,
             len(workspace.manifest.files),
         )
-        findings = run_lenses_in_parallel(lambda lens: self._run_lens(lens, workspace))
+        effective_config = ensure_config(config)
+        findings = run_lenses_in_parallel(
+            lambda lens: self._run_lens(lens, workspace, config=effective_config)
+        )
         logger.info("manifest.review.complete findings=%d", len(findings))
         return findings
 
-    def _run_lens(self, lens: Lens, workspace: ReviewWorkspace) -> list[Finding]:
+    def _run_lens(
+        self,
+        lens: Lens,
+        workspace: ReviewWorkspace,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> list[Finding]:
         logger.info("manifest.lens.start lens=%s", lens.value)
         agent = _create_deep_agent(
             model=self._model,
@@ -119,18 +135,18 @@ class ManifestReviewRunner:
         )
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
-        result = agent.invoke(
-            cast(
-                Any,
-                {
-                    "messages": [{"role": "user", "content": request}],
-                    "files": {
-                        path: create_file_data(content)
-                        for path, content in workspace.files.items()
-                    },
+        state = cast(
+            Any,
+            {
+                "messages": [{"role": "user", "content": request}],
+                "files": {
+                    path: create_file_data(content)
+                    for path, content in workspace.files.items()
                 },
-            )
+            },
         )
+        with set_config_context(config or ensure_config()) as context:
+            result = context.run(agent.invoke, state)
         findings = validate_lens_findings(lens, result["structured_response"])
         logger.info(
             "manifest.lens.complete lens=%s findings=%d",
@@ -156,12 +172,19 @@ class ManifestReviewAgent:
     ) -> None:
         self._graph = _create_manifest_graph(source=source, runner=runner)
 
-    def review(self, *, repo: str, number: int) -> Review | ReviewError:
+    def review(
+        self,
+        *,
+        repo: str,
+        number: int,
+        config: RunnableConfig | None = None,
+    ) -> Review | ReviewError:
         """Fetch patches and run one structured Review without a Git checkout."""
         state = cast(
             _ManifestGraphState,
             self._graph.invoke(
-                _ManifestGraphState(repo=repo, pull_request_number=number)
+                _ManifestGraphState(repo=repo, pull_request_number=number),
+                config=ensure_config(config),
             ),
         )
         return state["result"]
