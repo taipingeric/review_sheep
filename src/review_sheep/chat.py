@@ -11,7 +11,7 @@ from typing import Any, TextIO, cast
 from langchain_core.messages import HumanMessage
 
 from review_sheep.chat_graph import ChatState, create_chatbot_graph
-from review_sheep.config import ChatConfig, LangfuseConfig
+from review_sheep.config import ChatConfig
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import create_inquiry_agent
 from review_sheep.intent import create_intent_classifier
@@ -19,9 +19,9 @@ from review_sheep.manifest import create_manifest_review_agent
 from review_sheep.providers import ModelFactory, github_client, openai_model
 from review_sheep.runtime_logging import configure_console_logging
 from review_sheep.tracing import (
-    create_langfuse_handler,
-    flush_langfuse,
-    langfuse_turn_config,
+    create_tracing_handlers,
+    flush_tracing,
+    tracing_turn_config,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,10 +46,8 @@ def main(
     github_factory: Callable[[str], Any] = github_client,
     model_factory: ModelFactory = openai_model,
     reviewer_factory: Callable[..., Any] = create_manifest_review_agent,
-    tracing_factory: Callable[
-        [LangfuseConfig | None], Any | None
-    ] = create_langfuse_handler,
-    tracing_flush: Callable[..., None] = flush_langfuse,
+    tracing_factory: Callable[..., list[Any]] = create_tracing_handlers,
+    tracing_flush: Callable[..., None] = flush_tracing,
 ) -> int:
     """Continuously route Inquiry and Review requests using explicit config."""
     configure_logs = error is None
@@ -74,7 +72,7 @@ def main(
         print(f"error: {_safe_error(github_error, config)}", file=error)
         return 1
 
-    trace_handler: Any | None = None
+    trace_handlers: list[Any] = []
     try:
         github = GitHubPullRequestReader(client=client)
         try:
@@ -84,7 +82,10 @@ def main(
                 base_url=config.base_url,
             )
             logger.info("chat.model.ready model=%s", config.model)
-            trace_handler = tracing_factory(config.langfuse)
+            trace_handlers = tracing_factory(
+                langfuse=config.langfuse,
+                mlflow=config.mlflow,
+            )
         except (RuntimeError, ValueError) as config_error:
             print(f"error: {_safe_error(config_error, config)}", file=error)
             return 2
@@ -94,7 +95,7 @@ def main(
         review_agent = reviewer_factory(source=github, model=model)
         logger.info("chat.agents.ready inquiry=true review=manifest")
         session_id = uuid.uuid4().hex
-        if trace_handler is not None:
+        if trace_handlers:
             logger.info("chat.tracing.enabled session_id=%s", session_id)
         chatbot = create_chatbot_graph(
             agent=inquiry_agent,
@@ -133,8 +134,8 @@ def main(
                     ChatState,
                     chatbot.invoke(
                         conversation,
-                        config=langfuse_turn_config(
-                            handler=trace_handler,
+                        config=tracing_turn_config(
+                            handlers=trace_handlers,
                             session_id=session_id,
                             turn=turn,
                         ),
@@ -153,12 +154,11 @@ def main(
         return 1
     finally:
         tracing_flush(
-            enabled=trace_handler is not None,
-            public_key=(
-                config.langfuse.public_key
-                if trace_handler is not None and config.langfuse is not None
-                else None
+            langfuse_enabled=config.langfuse is not None,
+            langfuse_public_key=(
+                config.langfuse.public_key if config.langfuse is not None else None
             ),
+            mlflow_enabled=config.mlflow is not None,
         )
         client.close()
         logger.info("chat.stop github_client_closed=true")

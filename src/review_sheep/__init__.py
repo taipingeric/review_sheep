@@ -11,7 +11,7 @@ from review_sheep.checkout import (
     git_changed_files,
     git_diff,
 )
-from review_sheep.config import ChatConfig, LangfuseConfig
+from review_sheep.config import ChatConfig, LangfuseConfig, MLflowConfig
 from review_sheep.domain import (
     ChatIntent,
     Confidence,
@@ -77,6 +77,7 @@ __all__ = [
     "LangfuseConfig",
     "Lens",
     "Location",
+    "MLflowConfig",
     "Manifest",
     "ManifestFile",
     "ManifestReviewAgent",

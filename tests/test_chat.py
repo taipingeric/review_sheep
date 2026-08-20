@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import StringIO
 from typing import Any
 
+import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
@@ -11,7 +12,8 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from review_sheep.chat import main
-from review_sheep.config import ChatConfig, LangfuseConfig
+from review_sheep.config import ChatConfig, LangfuseConfig, MLflowConfig
+from review_sheep.tracing import flush_tracing
 
 
 class FakeGithubClient:
@@ -77,12 +79,15 @@ class DeterministicInquiryModel(BaseChatModel):
         )
 
 
-def _chat_config(*, base_url: str | None = None) -> ChatConfig:
+def _chat_config(
+    *, base_url: str | None = None, mlflow: MLflowConfig | None = None
+) -> ChatConfig:
     return ChatConfig(
         github_token="test-token",
         model="gpt-test",
         api_key="test-key",
         base_url=base_url,
+        mlflow=mlflow,
     )
 
 
@@ -224,7 +229,7 @@ def test_chat_traces_each_user_turn_as_one_langgraph_session() -> None:
         error=StringIO(),
         github_factory=lambda _: FakeGithubClient(),
         model_factory=lambda **_: DeterministicInquiryModel(),
-        tracing_factory=lambda config: handler,
+        tracing_factory=lambda **_: [handler],
         tracing_flush=lambda **_: None,
     )
 
@@ -256,9 +261,9 @@ def test_chat_uses_explicit_config_over_environment(monkeypatch: Any) -> None:
         captured.update(kwargs)
         return DeterministicInquiryModel()
 
-    def tracing_factory(config: LangfuseConfig | None) -> object:
-        captured["tracing"] = config
-        return object()
+    def tracing_factory(**kwargs: Any) -> list[Any]:
+        captured["tracing"] = kwargs
+        return []
 
     exit_code = main(
         config=ChatConfig(
@@ -283,7 +288,7 @@ def test_chat_uses_explicit_config_over_environment(monkeypatch: Any) -> None:
         "model": "injected-model",
         "api_key": "injected-key",
         "base_url": "https://model-injected.example",
-        "tracing": langfuse,
+        "tracing": {"langfuse": langfuse, "mlflow": None},
     }
 
 
@@ -310,3 +315,40 @@ def test_chat_redacts_credentials_from_error_output() -> None:
     assert "github-secret-injected" not in errors.getvalue()
     assert "model-secret-injected" not in errors.getvalue()
     assert "[redacted]" in errors.getvalue()
+
+
+def test_chat_records_an_inquiry_turn_in_mlflow(tmp_path: Any) -> None:
+    mlflow = pytest.importorskip("mlflow")
+    tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    experiment_name = "review-sheep-chat-test"
+    github = FakeGithubClient()
+    prompts = iter(["Who are you?", "quit"])
+
+    exit_code = main(
+        config=_chat_config(
+            mlflow=MLflowConfig(
+                tracking_uri=tracking_uri,
+                experiment_name=experiment_name,
+            )
+        ),
+        input_fn=lambda _: next(prompts),
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: github,
+        model_factory=lambda **_: DeterministicInquiryModel(),
+        tracing_flush=flush_tracing,
+    )
+
+    assert exit_code == 0
+    experiment = mlflow.get_experiment_by_name(experiment_name)
+    assert experiment is not None
+    traces = mlflow.search_traces(
+        locations=[experiment.experiment_id],
+        return_type="list",
+        include_spans=True,
+        flush=True,
+    )
+    assert any(
+        any(span.name == "review-sheep-chat-turn" for span in trace.data.spans)
+        for trace in traces
+    )
