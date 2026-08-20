@@ -3,6 +3,7 @@ from __future__ import annotations
 from io import StringIO
 from typing import Any
 
+import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
@@ -11,7 +12,8 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from review_sheep.chat import main
-from review_sheep.config import ChatConfig, LangfuseConfig
+from review_sheep.config import ChatConfig, LangfuseConfig, MLflowConfig
+from review_sheep.tracing import flush_tracing
 
 
 class FakeGithubClient:
@@ -77,12 +79,15 @@ class DeterministicInquiryModel(BaseChatModel):
         )
 
 
-def _chat_config(*, base_url: str | None = None) -> ChatConfig:
+def _chat_config(
+    *, base_url: str | None = None, mlflow: MLflowConfig | None = None
+) -> ChatConfig:
     return ChatConfig(
         github_token="test-token",
         model="gpt-test",
         api_key="test-key",
         base_url=base_url,
+        mlflow=mlflow,
     )
 
 
@@ -301,3 +306,40 @@ def test_chat_traces_each_user_turn_as_one_langgraph_session() -> None:
     assert {row["review_sheep_turn"] for row in traced} == {1}
     assert len({row["langfuse_session_id"] for row in traced}) == 1
     assert all("review-sheep" in row["langfuse_tags"] for row in traced)
+
+
+def test_chat_records_an_inquiry_turn_in_mlflow(tmp_path: Any) -> None:
+    mlflow = pytest.importorskip("mlflow")
+    tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
+    experiment_name = "review-sheep-chat-test"
+    github = FakeGithubClient()
+    prompts = iter(["Who are you?", "quit"])
+
+    exit_code = main(
+        config=_chat_config(
+            mlflow=MLflowConfig(
+                tracking_uri=tracking_uri,
+                experiment_name=experiment_name,
+            )
+        ),
+        input_fn=lambda _: next(prompts),
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: github,
+        model_factory=lambda **_: DeterministicInquiryModel(),
+        tracing_flush=flush_tracing,
+    )
+
+    assert exit_code == 0
+    experiment = mlflow.get_experiment_by_name(experiment_name)
+    assert experiment is not None
+    traces = mlflow.search_traces(
+        locations=[experiment.experiment_id],
+        return_type="list",
+        include_spans=True,
+        flush=True,
+    )
+    assert any(
+        any(span.name == "review-sheep-chat-turn" for span in trace.data.spans)
+        for trace in traces
+    )

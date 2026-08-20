@@ -63,6 +63,41 @@ class LangfuseConfig:
 
 
 @dataclass(frozen=True)
+class MLflowConfig:
+    """Explicit settings for one optional MLflow tracing destination."""
+
+    tracking_uri: str = field(repr=False)
+    experiment_name: str = "review-sheep"
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "tracking_uri",
+            _required(self.tracking_uri, "tracking_uri"),
+        )
+        object.__setattr__(
+            self,
+            "experiment_name",
+            self.experiment_name.strip() or "review-sheep",
+        )
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Mapping[str, str] | None = None,
+    ) -> MLflowConfig | None:
+        """Build MLflow settings when a tracking destination is configured."""
+        values = os.environ if environ is None else environ
+        tracking_uri = values.get("MLFLOW_TRACKING_URI", "").strip()
+        if not tracking_uri:
+            return None
+        return cls(
+            tracking_uri=tracking_uri,
+            experiment_name=values.get("MLFLOW_EXPERIMENT_NAME", "review-sheep"),
+        )
+
+
+@dataclass(frozen=True)
 class ChatConfig:
     """All settings required to run the interactive Inquiry and Review path."""
 
@@ -72,6 +107,7 @@ class ChatConfig:
     base_url: str | None = None
     review_log_level: str = "INFO"
     langfuse: LangfuseConfig | None = None
+    mlflow: MLflowConfig | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -101,6 +137,7 @@ class ChatConfig:
             base_url=values.get("BASE_URL", "").strip() or None,
             review_log_level=values.get("REVIEW_LOG_LEVEL", "INFO"),
             langfuse=LangfuseConfig.from_environment(values),
+            mlflow=MLflowConfig.from_environment(values),
         )
 
 
