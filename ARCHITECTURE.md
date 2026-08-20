@@ -299,9 +299,16 @@ process environment / trusted secret adapter
 ```
 
 The interactive Chat CLI requires `GITHUB_TOKEN`, `OPENAI_MODEL`, and
-`OPENAI_API_KEY`; `BASE_URL` is optional. The non-interactive CI entrypoint uses
+`OPENAI_API_KEY`; `BASE_URL` is optional. The non-interactive CI entrypoint
+receives a `CIConfig` containing the GitHub credentials, Anthropic provider
+settings, selected model, Review Checkout, repository, pull-request number,
+and instructions. `scripts/review_pr.py` is the process-boundary adapter that
+builds that config from trusted environment values and CLI arguments. The
+`review_sheep.ci.main` Review path does not load `.env` or read process
+environment values, so callers can inject configuration directly and explicit
+values take precedence over adapter defaults. Its adapter supports
 `GITHUB_TOKEN`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`, and the selected
-`ANTHROPIC_DEFAULT_{HAIKU|SONNET|OPUS}_MODEL`. Custom headers and model tier are
+`ANTHROPIC_DEFAULT_{HAIKU|SONNET|OPUS}_MODEL`; custom headers and model tier are
 optional.
 
 The interactive entrypoint configures `review_sheep.*` console logs at

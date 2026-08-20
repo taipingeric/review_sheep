@@ -295,6 +295,12 @@ job log, appended to the GitHub Actions step summary, and published as a
 pull-request conversation comment. Later runs update the existing Review Sheep
 comment instead of creating duplicates.
 
+The CI entrypoint receives an explicit `CIConfig`. The script is only an
+adapter from trusted environment values and command-line inputs; the Review
+path itself does not load a local `.env` file. This lets GitHub Actions and
+other CI callers inject credentials and provider settings without placing
+secrets in the checkout.
+
 This repository also contains `.github/workflows/review.yml`, which runs the
 reusable workflow automatically for same-repository pull requests. Configure
 it with:
