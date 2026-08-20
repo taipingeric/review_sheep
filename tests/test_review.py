@@ -264,11 +264,12 @@ def test_deep_review_propagates_trace_config_to_every_lens(
         for agent in agents
     )
     assert all(
-        agent.configs[0]["metadata"]["review_sheep_session_id"]
-        == "ci:acme/widgets#42"
+        agent.configs[0]["metadata"]["review_sheep_session_id"] == "ci:acme/widgets#42"
         for agent in agents
     )
-    assert all(agent.configs[0]["tags"] == ["review-sheep", "ci", "review"] for agent in agents)
+    assert all(
+        agent.configs[0]["tags"] == ["review-sheep", "ci", "review"] for agent in agents
+    )
 
 
 def test_checkout_diff_tool_rejects_parent_traversal(tmp_path: Path) -> None:
