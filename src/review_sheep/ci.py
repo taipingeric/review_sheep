@@ -9,8 +9,6 @@ import sys
 from collections.abc import Callable, Sequence
 from typing import Any, TextIO
 
-from dotenv import load_dotenv
-
 from review_sheep.checkout import GitCheckoutSource
 from review_sheep.domain import Review, ReviewError
 from review_sheep.github import GitHubPullRequestReader
@@ -77,7 +75,6 @@ def main(
             stream=error,
             level=os.getenv("REVIEW_LOG_LEVEL", "INFO"),
         )
-    load_dotenv(dotenv_path=".env")
     args = _parser().parse_args(argv)
 
     try:

@@ -165,6 +165,11 @@ def test_ci_requires_pull_request_context_before_creating_clients(
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env").write_text(
+        "GITHUB_REPOSITORY=acme/widgets\n"
+        "REVIEW_PR_NUMBER=42\n"
+        "GITHUB_TOKEN=github-token-from-dotenv\n"
+    )
     errors = StringIO()
     github_calls = 0
 
@@ -218,12 +223,8 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert "pull_request:" in workflow
     assert "uses: ./.github/workflows/review-pr.yml" in workflow
     assert "review_sheep_ref: ${{ github.event.pull_request.head.sha }}" in workflow
-    assert (
-        "ANTHROPIC_AUTH_TOKEN: " "${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
-    )
-    assert (
-        "anthropic_base_url: " "${{ vars.ANTHROPIC_BASE_URL }}" in workflow
-    )
+    assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
+    assert "anthropic_base_url: ${{ vars.ANTHROPIC_BASE_URL }}" in workflow
     assert "sonnet_model:" in workflow
     assert "claude-sonnet-4-6" in workflow
     assert "head.repo.full_name == github.repository" in workflow

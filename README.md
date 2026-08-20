@@ -182,19 +182,21 @@ uv sync --extra openai --extra dev
 ```
 
 The interactive script reads `GITHUB_TOKEN`, `OPENAI_MODEL`, `OPENAI_API_KEY`,
-and optional `BASE_URL` and `REVIEW_LOG_LEVEL` from `.env`:
+and optional `BASE_URL` and `REVIEW_LOG_LEVEL` from the process environment.
+Provide secrets through your shell, CI secret store, or another trusted
+environment adapter; the application core does not load a local `.env` file.
 
-```dotenv
-GITHUB_TOKEN=your-read-only-github-token
-OPENAI_MODEL=gpt-5-mini
-OPENAI_API_KEY=your-openai-api-key
-REVIEW_LOG_LEVEL=INFO
-# BASE_URL=https://your-compatible-endpoint/v1
+```bash
+export GITHUB_TOKEN=your-read-only-github-token
+export OPENAI_MODEL=gpt-5-mini
+export OPENAI_API_KEY=your-openai-api-key
+export REVIEW_LOG_LEVEL=INFO
+# export BASE_URL=https://your-compatible-endpoint/v1
 # Optional Langfuse tracing:
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com
-LANGFUSE_TRACING_ENVIRONMENT=development
+export LANGFUSE_PUBLIC_KEY=pk-lf-...
+export LANGFUSE_SECRET_KEY=sk-lf-...
+export LANGFUSE_BASE_URL=https://cloud.langfuse.com
+export LANGFUSE_TRACING_ENVIRONMENT=development
 ```
 
 ```bash

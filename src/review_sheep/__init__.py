@@ -11,6 +11,7 @@ from review_sheep.checkout import (
     git_changed_files,
     git_diff,
 )
+from review_sheep.config import ChatConfig, LangfuseConfig
 from review_sheep.domain import (
     ChatIntent,
     Confidence,
@@ -60,6 +61,7 @@ from review_sheep.tools import review_pull_request_tool
 __version__ = "0.1.1"
 
 __all__ = [
+    "ChatConfig",
     "ChatIntent",
     "ChatState",
     "Confidence",
@@ -72,6 +74,7 @@ __all__ = [
     "InquiryChatState",
     "IntentClassifier",
     "IntentDecision",
+    "LangfuseConfig",
     "Lens",
     "Location",
     "Manifest",

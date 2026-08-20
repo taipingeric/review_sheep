@@ -11,6 +11,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from review_sheep.chat import main
+from review_sheep.config import ChatConfig, LangfuseConfig
 
 
 class FakeGithubClient:
@@ -76,15 +77,16 @@ class DeterministicInquiryModel(BaseChatModel):
         )
 
 
-def _configure(monkeypatch: Any) -> None:
-    monkeypatch.setenv("GITHUB_TOKEN", "test-token")
-    monkeypatch.setenv("OPENAI_MODEL", "gpt-test")
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("LANGFUSE_TRACING_ENABLED", "false")
+def _chat_config(*, base_url: str | None = None) -> ChatConfig:
+    return ChatConfig(
+        github_token="test-token",
+        model="gpt-test",
+        api_key="test-key",
+        base_url=base_url,
+    )
 
 
-def test_chat_reports_github_client_startup_failure(monkeypatch: Any) -> None:
-    _configure(monkeypatch)
+def test_chat_reports_github_client_startup_failure() -> None:
     output = StringIO()
     errors = StringIO()
 
@@ -92,6 +94,7 @@ def test_chat_reports_github_client_startup_failure(monkeypatch: Any) -> None:
         raise RuntimeError("GitHub credentials rejected")
 
     exit_code = main(
+        config=_chat_config(),
         input_fn=lambda _: "quit",
         output=output,
         error=errors,
@@ -104,10 +107,7 @@ def test_chat_reports_github_client_startup_failure(monkeypatch: Any) -> None:
     assert errors.getvalue() == "error: RuntimeError: GitHub credentials rejected\n"
 
 
-def test_chat_exits_cleanly_on_eof_during_the_conversation(
-    monkeypatch: Any,
-) -> None:
-    _configure(monkeypatch)
+def test_chat_exits_cleanly_on_eof_during_the_conversation() -> None:
     output = StringIO()
     errors = StringIO()
     github = FakeGithubClient()
@@ -120,6 +120,7 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation(
         reviewer_configs.append(kwargs)
 
     exit_code = main(
+        config=_chat_config(),
         input_fn=end_input,
         output=output,
         error=errors,
@@ -143,9 +144,7 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation(
     assert "checkout" not in reviewer_configs[0]
 
 
-def test_chat_treats_a_whitespace_base_url_as_unset(monkeypatch: Any) -> None:
-    _configure(monkeypatch)
-    monkeypatch.setenv("BASE_URL", "   ")
+def test_chat_treats_a_whitespace_base_url_as_unset() -> None:
     base_urls: list[str | None] = []
 
     def capture_model_config(**kwargs: Any) -> DeterministicInquiryModel:
@@ -154,6 +153,7 @@ def test_chat_treats_a_whitespace_base_url_as_unset(monkeypatch: Any) -> None:
 
     github = FakeGithubClient()
     exit_code = main(
+        config=_chat_config(base_url="   "),
         input_fn=lambda _: "quit",
         output=StringIO(),
         error=StringIO(),
@@ -166,10 +166,7 @@ def test_chat_treats_a_whitespace_base_url_as_unset(monkeypatch: Any) -> None:
     assert github.closed is True
 
 
-def test_chat_routes_each_question_through_inquiry_agent_and_langgraph(
-    monkeypatch: Any,
-) -> None:
-    _configure(monkeypatch)
+def test_chat_routes_each_question_through_inquiry_agent_and_langgraph() -> None:
     github = FakeGithubClient()
     model = DeterministicInquiryModel()
     prompts = iter(["Tell me about pull request 42.", "quit"])
@@ -177,6 +174,7 @@ def test_chat_routes_each_question_through_inquiry_agent_and_langgraph(
     errors = StringIO()
 
     exit_code = main(
+        config=_chat_config(),
         input_fn=lambda _: next(prompts),
         output=output,
         error=errors,
@@ -213,20 +211,20 @@ class RecordingTraceHandler(BaseCallbackHandler):
         self.metadata.append(metadata or {})
 
 
-def test_chat_traces_each_user_turn_as_one_langgraph_session(
-    monkeypatch: Any,
-) -> None:
-    _configure(monkeypatch)
+def test_chat_traces_each_user_turn_as_one_langgraph_session() -> None:
     handler = RecordingTraceHandler()
     prompts = iter(["Who are you?", "quit"])
 
     exit_code = main(
+        config=_chat_config(
+            base_url="https://injected.example",
+        ),
         input_fn=lambda _: next(prompts),
         output=StringIO(),
         error=StringIO(),
         github_factory=lambda _: FakeGithubClient(),
         model_factory=lambda **_: DeterministicInquiryModel(),
-        tracing_factory=lambda: handler,
+        tracing_factory=lambda config: handler,
         tracing_flush=lambda **_: None,
     )
 
@@ -236,3 +234,79 @@ def test_chat_traces_each_user_turn_as_one_langgraph_session(
     assert {row["review_sheep_turn"] for row in traced} == {1}
     assert len({row["langfuse_session_id"] for row in traced}) == 1
     assert all("review-sheep" in row["langfuse_tags"] for row in traced)
+
+
+def test_chat_uses_explicit_config_over_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "environment-token")
+    monkeypatch.setenv("OPENAI_MODEL", "environment-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+    captured: dict[str, Any] = {}
+    langfuse = LangfuseConfig(
+        public_key="pk-injected",
+        secret_key="sk-injected",
+        base_url="https://trace-injected.example",
+        environment="test",
+    )
+
+    def github_factory(token: str) -> FakeGithubClient:
+        captured["github_token"] = token
+        return FakeGithubClient()
+
+    def model_factory(**kwargs: Any) -> DeterministicInquiryModel:
+        captured.update(kwargs)
+        return DeterministicInquiryModel()
+
+    def tracing_factory(config: LangfuseConfig | None) -> object:
+        captured["tracing"] = config
+        return object()
+
+    exit_code = main(
+        config=ChatConfig(
+            github_token="injected-token",
+            model="injected-model",
+            api_key="injected-key",
+            base_url="https://model-injected.example",
+            langfuse=langfuse,
+        ),
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=github_factory,
+        model_factory=model_factory,
+        tracing_factory=tracing_factory,
+        tracing_flush=lambda **_: None,
+    )
+
+    assert exit_code == 0
+    assert captured == {
+        "github_token": "injected-token",
+        "model": "injected-model",
+        "api_key": "injected-key",
+        "base_url": "https://model-injected.example",
+        "tracing": langfuse,
+    }
+
+
+def test_chat_redacts_credentials_from_error_output() -> None:
+    config = ChatConfig(
+        github_token="github-secret-injected",
+        model="gpt-test",
+        api_key="model-secret-injected",
+    )
+    errors = StringIO()
+
+    def unavailable_github(token: str) -> Any:
+        raise RuntimeError(f"token={token} api_key={config.api_key}")
+
+    exit_code = main(
+        config=config,
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        error=errors,
+        github_factory=unavailable_github,
+    )
+
+    assert exit_code == 1
+    assert "github-secret-injected" not in errors.getvalue()
+    assert "model-secret-injected" not in errors.getvalue()
+    assert "[redacted]" in errors.getvalue()
