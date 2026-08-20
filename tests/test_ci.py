@@ -4,8 +4,6 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from langchain_core.runnables.config import ensure_config
-
 from review_sheep import Review, ReviewError, ReviewOperation
 from review_sheep.ci import main
 
@@ -26,16 +24,6 @@ class FakeReviewer:
     def review(self, *, repo: str, number: int) -> Review | ReviewError:
         self.calls.append((repo, number))
         return self.result
-
-
-class TraceRecordingReviewer(FakeReviewer):
-    def __init__(self, result: Review | ReviewError) -> None:
-        super().__init__(result)
-        self.configs: list[dict[str, Any]] = []
-
-    def review(self, *, repo: str, number: int) -> Review | ReviewError:
-        self.configs.append(ensure_config())
-        return super().review(repo=repo, number=number)
 
 
 def _configure(monkeypatch: Any) -> None:
@@ -121,101 +109,6 @@ No Findings.
     assert github.closed is True
 
 
-def test_ci_traces_review_with_both_backends_and_flushes_afterward(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    _configure(monkeypatch)
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-ci")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-ci")
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow-ci")
-    output = StringIO()
-    errors = StringIO()
-    github = FakeGithubClient()
-    reviewer = TraceRecordingReviewer(_empty_review())
-    tracing_configs: list[dict[str, Any]] = []
-    flush_configs: list[dict[str, Any]] = []
-
-    def capture_tracing(**kwargs: Any) -> list[Any]:
-        tracing_configs.append(kwargs)
-        return ["trace-handler"]
-
-    def capture_flush(**kwargs: Any) -> None:
-        flush_configs.append(kwargs)
-
-    exit_code = main(
-        [
-            "--repo",
-            "acme/widgets",
-            "--pr-number",
-            "42",
-            "--checkout",
-            str(tmp_path),
-        ],
-        output=output,
-        error=errors,
-        github_factory=lambda _: github,
-        model_factory=lambda **_: "test:model",
-        reviewer_factory=lambda **_: reviewer,
-        tracing_factory=capture_tracing,
-        tracing_flush=capture_flush,
-    )
-
-    assert exit_code == 0
-    assert output.getvalue().startswith("# Review Report: acme/widgets#42")
-    assert errors.getvalue() == ""
-    assert len(tracing_configs) == 1
-    assert tracing_configs[0]["langfuse"].public_key == "pk-ci"
-    assert tracing_configs[0]["langfuse"].secret_key == "sk-ci"
-    assert tracing_configs[0]["mlflow"].tracking_uri == "http://mlflow-ci"
-    assert reviewer.configs[0]["metadata"]["review_sheep_run_kind"] == "ci"
-    assert reviewer.configs[0]["metadata"]["review_sheep_session_id"] == (
-        "ci:acme/widgets#42"
-    )
-    assert flush_configs == [
-        {
-            "langfuse_enabled": True,
-            "langfuse_public_key": "pk-ci",
-            "mlflow_enabled": True,
-        }
-    ]
-    assert github.closed is True
-
-
-def test_ci_tracing_initialization_failure_does_not_change_review_result(
-    monkeypatch: Any, tmp_path: Path
-) -> None:
-    _configure(monkeypatch)
-    monkeypatch.setenv("MLFLOW_TRACKING_URI", "http://mlflow-ci")
-    github = FakeGithubClient()
-
-    def unavailable_tracing(**_: Any) -> list[Any]:
-        raise RuntimeError("MLflow unavailable")
-
-    def unavailable_flush(**_: Any) -> None:
-        raise RuntimeError("MLflow flush unavailable")
-
-    exit_code = main(
-        [
-            "--repo",
-            "acme/widgets",
-            "--pr-number",
-            "42",
-            "--checkout",
-            str(tmp_path),
-        ],
-        output=StringIO(),
-        error=StringIO(),
-        github_factory=lambda _: github,
-        model_factory=lambda **_: "test:model",
-        reviewer_factory=lambda **_: FakeReviewer(_empty_review()),
-        tracing_factory=unavailable_tracing,
-        tracing_flush=unavailable_flush,
-    )
-
-    assert exit_code == 0
-    assert github.closed is True
-
-
 def test_ci_returns_review_error_as_failed_exit_code(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -272,6 +165,11 @@ def test_ci_requires_pull_request_context_before_creating_clients(
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
+    (tmp_path / ".env").write_text(
+        "GITHUB_REPOSITORY=acme/widgets\n"
+        "REVIEW_PR_NUMBER=42\n"
+        "GITHUB_TOKEN=github-token-from-dotenv\n"
+    )
     errors = StringIO()
     github_calls = 0
 
@@ -304,8 +202,6 @@ def test_reusable_workflow_keeps_tooling_outside_the_review_checkout() -> None:
     assert "path: review-target" in workflow
     assert "path: review-sheep" in workflow
     assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
-    assert "LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}" in workflow
-    assert "MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}" in workflow
     assert (
         "ANTHROPIC_BASE_URL: "
         "${{ inputs.anthropic_base_url || secrets.ANTHROPIC_BASE_URL }}" in workflow
@@ -327,14 +223,8 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert "pull_request:" in workflow
     assert "uses: ./.github/workflows/review-pr.yml" in workflow
     assert "review_sheep_ref: ${{ github.event.pull_request.head.sha }}" in workflow
-    assert (
-        "ANTHROPIC_AUTH_TOKEN: " "${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
-    )
-    assert "LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}" in workflow
-    assert "MLFLOW_EXPERIMENT_NAME: ${{ secrets.MLFLOW_EXPERIMENT_NAME }}" in workflow
-    assert (
-        "anthropic_base_url: " "${{ vars.ANTHROPIC_BASE_URL }}" in workflow
-    )
+    assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
+    assert "anthropic_base_url: ${{ vars.ANTHROPIC_BASE_URL }}" in workflow
     assert "sonnet_model:" in workflow
     assert "claude-sonnet-4-6" in workflow
     assert "head.repo.full_name == github.repository" in workflow

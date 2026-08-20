@@ -3,7 +3,6 @@ from __future__ import annotations
 from io import StringIO
 from typing import Any
 
-import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
@@ -12,8 +11,7 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
 from review_sheep.chat import main
-from review_sheep.config import ChatConfig, LangfuseConfig, MLflowConfig
-from review_sheep.tracing import flush_tracing
+from review_sheep.config import ChatConfig, LangfuseConfig
 
 
 class FakeGithubClient:
@@ -79,128 +77,13 @@ class DeterministicInquiryModel(BaseChatModel):
         )
 
 
-def _chat_config(
-    *, base_url: str | None = None, mlflow: MLflowConfig | None = None
-) -> ChatConfig:
+def _chat_config(*, base_url: str | None = None) -> ChatConfig:
     return ChatConfig(
         github_token="test-token",
         model="gpt-test",
         api_key="test-key",
         base_url=base_url,
-        mlflow=mlflow,
     )
-
-
-def test_chat_uses_explicit_config_over_environment(
-    monkeypatch: Any,
-) -> None:
-    monkeypatch.setenv("GITHUB_TOKEN", "environment-token")
-    monkeypatch.setenv("OPENAI_MODEL", "environment-model")
-    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
-
-    github_tokens: list[str] = []
-    model_configs: list[dict[str, Any]] = []
-    tracing_configs: list[dict[str, Any]] = []
-    github = FakeGithubClient()
-
-    def capture_github(token: str) -> FakeGithubClient:
-        github_tokens.append(token)
-        return github
-
-    def capture_model(**kwargs: Any) -> DeterministicInquiryModel:
-        model_configs.append(kwargs)
-        return DeterministicInquiryModel()
-
-    def capture_tracing(**kwargs: Any) -> list[Any]:
-        tracing_configs.append(kwargs)
-        return []
-
-    exit_code = main(
-        config=ChatConfig(
-            github_token="injected-token",
-            model="injected-model",
-            api_key="injected-key",
-            base_url="https://provider.example.com/v1",
-            langfuse=LangfuseConfig(
-                public_key="pk-injected",
-                secret_key="sk-injected",
-                base_url="https://langfuse.example.com",
-                environment="test",
-            ),
-        ),
-        input_fn=lambda _: "quit",
-        output=StringIO(),
-        error=StringIO(),
-        github_factory=capture_github,
-        model_factory=capture_model,
-        reviewer_factory=lambda **_: None,
-        tracing_factory=capture_tracing,
-    )
-
-    assert exit_code == 0
-    assert github_tokens == ["injected-token"]
-    assert model_configs == [
-        {
-            "model": "injected-model",
-            "api_key": "injected-key",
-            "base_url": "https://provider.example.com/v1",
-        }
-    ]
-    assert tracing_configs == [
-        {
-            "langfuse": LangfuseConfig(
-                public_key="pk-injected",
-                secret_key="sk-injected",
-                base_url="https://langfuse.example.com",
-                environment="test",
-            ),
-            "mlflow": None,
-        }
-    ]
-    assert github.closed is True
-
-
-@pytest.mark.parametrize(
-    ("langfuse", "mlflow"),
-    [
-        (None, None),
-        (LangfuseConfig(public_key="pk", secret_key="sk"), None),
-        (None, MLflowConfig(tracking_uri="http://mlflow")),
-        (
-            LangfuseConfig(public_key="pk", secret_key="sk"),
-            MLflowConfig(tracking_uri="http://mlflow"),
-        ),
-    ],
-)
-def test_chat_tracing_configuration_matrix(
-    langfuse: LangfuseConfig | None,
-    mlflow: MLflowConfig | None,
-) -> None:
-    tracing_configs: list[dict[str, Any]] = []
-
-    def capture_tracing(**kwargs: Any) -> list[Any]:
-        tracing_configs.append(kwargs)
-        return []
-
-    exit_code = main(
-        config=ChatConfig(
-            github_token="test-token",
-            model="gpt-test",
-            api_key="test-key",
-            langfuse=langfuse,
-            mlflow=mlflow,
-        ),
-        input_fn=lambda _: "quit",
-        output=StringIO(),
-        error=StringIO(),
-        github_factory=lambda _: FakeGithubClient(),
-        model_factory=lambda **_: DeterministicInquiryModel(),
-        tracing_factory=capture_tracing,
-        tracing_flush=lambda **_: None,
-    )
-
-    assert exit_code == 0
-    assert tracing_configs == [{"langfuse": langfuse, "mlflow": mlflow}]
 
 
 def test_chat_reports_github_client_startup_failure() -> None:
@@ -333,13 +216,15 @@ def test_chat_traces_each_user_turn_as_one_langgraph_session() -> None:
     prompts = iter(["Who are you?", "quit"])
 
     exit_code = main(
-        config=_chat_config(),
+        config=_chat_config(
+            base_url="https://injected.example",
+        ),
         input_fn=lambda _: next(prompts),
         output=StringIO(),
         error=StringIO(),
         github_factory=lambda _: FakeGithubClient(),
         model_factory=lambda **_: DeterministicInquiryModel(),
-        tracing_factory=lambda **_: [handler],
+        tracing_factory=lambda config: handler,
         tracing_flush=lambda **_: None,
     )
 
@@ -351,38 +236,77 @@ def test_chat_traces_each_user_turn_as_one_langgraph_session() -> None:
     assert all("review-sheep" in row["langfuse_tags"] for row in traced)
 
 
-def test_chat_records_an_inquiry_turn_in_mlflow(tmp_path: Any) -> None:
-    mlflow = pytest.importorskip("mlflow")
-    tracking_uri = f"sqlite:///{tmp_path / 'mlflow.db'}"
-    experiment_name = "review-sheep-chat-test"
-    github = FakeGithubClient()
-    prompts = iter(["Who are you?", "quit"])
+def test_chat_uses_explicit_config_over_environment(monkeypatch: Any) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "environment-token")
+    monkeypatch.setenv("OPENAI_MODEL", "environment-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+    captured: dict[str, Any] = {}
+    langfuse = LangfuseConfig(
+        public_key="pk-injected",
+        secret_key="sk-injected",
+        base_url="https://trace-injected.example",
+        environment="test",
+    )
+
+    def github_factory(token: str) -> FakeGithubClient:
+        captured["github_token"] = token
+        return FakeGithubClient()
+
+    def model_factory(**kwargs: Any) -> DeterministicInquiryModel:
+        captured.update(kwargs)
+        return DeterministicInquiryModel()
+
+    def tracing_factory(config: LangfuseConfig | None) -> object:
+        captured["tracing"] = config
+        return object()
 
     exit_code = main(
-        config=_chat_config(
-            mlflow=MLflowConfig(
-                tracking_uri=tracking_uri,
-                experiment_name=experiment_name,
-            )
+        config=ChatConfig(
+            github_token="injected-token",
+            model="injected-model",
+            api_key="injected-key",
+            base_url="https://model-injected.example",
+            langfuse=langfuse,
         ),
-        input_fn=lambda _: next(prompts),
+        input_fn=lambda _: "quit",
         output=StringIO(),
         error=StringIO(),
-        github_factory=lambda _: github,
-        model_factory=lambda **_: DeterministicInquiryModel(),
-        tracing_flush=flush_tracing,
+        github_factory=github_factory,
+        model_factory=model_factory,
+        tracing_factory=tracing_factory,
+        tracing_flush=lambda **_: None,
     )
 
     assert exit_code == 0
-    experiment = mlflow.get_experiment_by_name(experiment_name)
-    assert experiment is not None
-    traces = mlflow.search_traces(
-        locations=[experiment.experiment_id],
-        return_type="list",
-        include_spans=True,
-        flush=True,
+    assert captured == {
+        "github_token": "injected-token",
+        "model": "injected-model",
+        "api_key": "injected-key",
+        "base_url": "https://model-injected.example",
+        "tracing": langfuse,
+    }
+
+
+def test_chat_redacts_credentials_from_error_output() -> None:
+    config = ChatConfig(
+        github_token="github-secret-injected",
+        model="gpt-test",
+        api_key="model-secret-injected",
     )
-    assert any(
-        any(span.name == "review-sheep-chat-turn" for span in trace.data.spans)
-        for trace in traces
+    errors = StringIO()
+
+    def unavailable_github(token: str) -> Any:
+        raise RuntimeError(f"token={token} api_key={config.api_key}")
+
+    exit_code = main(
+        config=config,
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        error=errors,
+        github_factory=unavailable_github,
     )
+
+    assert exit_code == 1
+    assert "github-secret-injected" not in errors.getvalue()
+    assert "model-secret-injected" not in errors.getvalue()
+    assert "[redacted]" in errors.getvalue()

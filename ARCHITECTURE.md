@@ -288,7 +288,8 @@ CI Review.
 ## Runtime composition
 
 ```text
-.env
+process environment / trusted secret adapter
+  -> ChatConfig
   -> PyGithub client -> GitHubPullRequestReader
   -> PullRequestSnapshot -> Manifest -> virtual diff files
   -> ChatOpenAI

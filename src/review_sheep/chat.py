@@ -11,7 +11,7 @@ from typing import Any, TextIO, cast
 from langchain_core.messages import HumanMessage
 
 from review_sheep.chat_graph import ChatState, create_chatbot_graph
-from review_sheep.config import ChatConfig
+from review_sheep.config import ChatConfig, LangfuseConfig
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import create_inquiry_agent
 from review_sheep.intent import create_intent_classifier
@@ -19,12 +19,22 @@ from review_sheep.manifest import create_manifest_review_agent
 from review_sheep.providers import ModelFactory, github_client, openai_model
 from review_sheep.runtime_logging import configure_console_logging
 from review_sheep.tracing import (
-    create_tracing_handlers,
-    flush_tracing,
-    tracing_turn_config,
+    create_langfuse_handler,
+    flush_langfuse,
+    langfuse_turn_config,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_error(error: BaseException, config: ChatConfig) -> str:
+    message = str(error)
+    secrets = [config.github_token, config.api_key]
+    if config.langfuse is not None:
+        secrets.append(config.langfuse.secret_key)
+    for secret in secrets:
+        message = message.replace(secret, "[redacted]")
+    return f"{type(error).__name__}: {message}"
 
 
 def main(
@@ -36,10 +46,12 @@ def main(
     github_factory: Callable[[str], Any] = github_client,
     model_factory: ModelFactory = openai_model,
     reviewer_factory: Callable[..., Any] = create_manifest_review_agent,
-    tracing_factory: Callable[..., list[Any]] = create_tracing_handlers,
-    tracing_flush: Callable[..., None] = flush_tracing,
+    tracing_factory: Callable[
+        [LangfuseConfig | None], Any | None
+    ] = create_langfuse_handler,
+    tracing_flush: Callable[..., None] = flush_langfuse,
 ) -> int:
-    """Continuously route Inquiry and Review requests from explicit settings."""
+    """Continuously route Inquiry and Review requests using explicit config."""
     configure_logs = error is None
     output = output or sys.stdout
     error = error or sys.stderr
@@ -59,13 +71,10 @@ def main(
         client = github_factory(config.github_token)
         logger.info("chat.github_client.ready")
     except Exception as github_error:  # noqa: BLE001 - concise CLI boundary
-        print(
-            f"error: {type(github_error).__name__}: {github_error}",
-            file=error,
-        )
+        print(f"error: {_safe_error(github_error, config)}", file=error)
         return 1
 
-    trace_handlers: list[Any] = []
+    trace_handler: Any | None = None
     try:
         github = GitHubPullRequestReader(client=client)
         try:
@@ -75,12 +84,9 @@ def main(
                 base_url=config.base_url,
             )
             logger.info("chat.model.ready model=%s", config.model)
-            trace_handlers = tracing_factory(
-                langfuse=config.langfuse,
-                mlflow=config.mlflow,
-            )
+            trace_handler = tracing_factory(config.langfuse)
         except (RuntimeError, ValueError) as config_error:
-            print(f"error: {config_error}", file=error)
+            print(f"error: {_safe_error(config_error, config)}", file=error)
             return 2
 
         inquiry_agent = create_inquiry_agent(model=model, github=github)
@@ -88,7 +94,7 @@ def main(
         review_agent = reviewer_factory(source=github, model=model)
         logger.info("chat.agents.ready inquiry=true review=manifest")
         session_id = uuid.uuid4().hex
-        if trace_handlers:
+        if trace_handler is not None:
             logger.info("chat.tracing.enabled session_id=%s", session_id)
         chatbot = create_chatbot_graph(
             agent=inquiry_agent,
@@ -127,8 +133,8 @@ def main(
                     ChatState,
                     chatbot.invoke(
                         conversation,
-                        config=tracing_turn_config(
-                            handlers=trace_handlers,
+                        config=langfuse_turn_config(
+                            handler=trace_handler,
                             session_id=session_id,
                             turn=turn,
                         ),
@@ -140,24 +146,19 @@ def main(
                 )
                 logger.info("chat.turn.complete")
             except Exception as inquiry_error:  # noqa: BLE001 - keep the loop alive
-                print(
-                    f"error: {type(inquiry_error).__name__}: {inquiry_error}",
-                    file=error,
-                )
+                print(f"error: {_safe_error(inquiry_error, config)}", file=error)
         return 0
     except Exception as github_error:  # noqa: BLE001 - concise CLI boundary
-        print(
-            f"error: {type(github_error).__name__}: {github_error}",
-            file=error,
-        )
+        print(f"error: {_safe_error(github_error, config)}", file=error)
         return 1
     finally:
         tracing_flush(
-            langfuse_enabled=config.langfuse is not None,
-            langfuse_public_key=(
-                config.langfuse.public_key if config.langfuse is not None else None
+            enabled=trace_handler is not None,
+            public_key=(
+                config.langfuse.public_key
+                if trace_handler is not None and config.langfuse is not None
+                else None
             ),
-            mlflow_enabled=config.mlflow is not None,
         )
         client.close()
         logger.info("chat.stop github_client_closed=true")
