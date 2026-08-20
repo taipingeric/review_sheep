@@ -304,6 +304,8 @@ def test_reusable_workflow_keeps_tooling_outside_the_review_checkout() -> None:
     assert "path: review-target" in workflow
     assert "path: review-sheep" in workflow
     assert "ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
+    assert "LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}" in workflow
+    assert "MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}" in workflow
     assert (
         "ANTHROPIC_BASE_URL: "
         "${{ inputs.anthropic_base_url || secrets.ANTHROPIC_BASE_URL }}" in workflow
@@ -328,6 +330,8 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert (
         "ANTHROPIC_AUTH_TOKEN: " "${{ secrets.ANTHROPIC_AUTH_TOKEN }}" in workflow
     )
+    assert "LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}" in workflow
+    assert "MLFLOW_EXPERIMENT_NAME: ${{ secrets.MLFLOW_EXPERIMENT_NAME }}" in workflow
     assert (
         "anthropic_base_url: " "${{ vars.ANTHROPIC_BASE_URL }}" in workflow
     )

@@ -245,7 +245,10 @@ def test_deep_review_propagates_trace_config_to_every_lens(
 
     monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
     config: RunnableConfig = {
-        "metadata": {"review_sheep_run_kind": "ci"},
+        "metadata": {
+            "review_sheep_run_kind": "ci",
+            "review_sheep_session_id": "ci:acme/widgets#42",
+        },
         "tags": ["review-sheep", "ci", "review"],
     }
 
@@ -258,6 +261,11 @@ def test_deep_review_propagates_trace_config_to_every_lens(
     assert len(agents) == len(Lens)
     assert all(
         agent.configs[0]["metadata"]["review_sheep_run_kind"] == "ci"
+        for agent in agents
+    )
+    assert all(
+        agent.configs[0]["metadata"]["review_sheep_session_id"]
+        == "ci:acme/widgets#42"
         for agent in agents
     )
     assert all(agent.configs[0]["tags"] == ["review-sheep", "ci", "review"] for agent in agents)

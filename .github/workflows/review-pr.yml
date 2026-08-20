@@ -48,6 +48,24 @@ on:
       ANTHROPIC_CUSTOM_HEADERS:
         description: Optional newline-separated custom request headers.
         required: false
+      LANGFUSE_PUBLIC_KEY:
+        description: Optional Langfuse public key for CI tracing.
+        required: false
+      LANGFUSE_SECRET_KEY:
+        description: Optional Langfuse secret key for CI tracing.
+        required: false
+      LANGFUSE_BASE_URL:
+        description: Optional Langfuse endpoint for CI tracing.
+        required: false
+      LANGFUSE_TRACING_ENVIRONMENT:
+        description: Optional Langfuse environment label for CI tracing.
+        required: false
+      MLFLOW_TRACKING_URI:
+        description: Optional MLflow tracking URI for CI tracing.
+        required: false
+      MLFLOW_EXPERIMENT_NAME:
+        description: Optional MLflow experiment name for CI tracing.
+        required: false
       ANTHROPIC_DEFAULT_HAIKU_MODEL:
         description: Gateway model ID for the Haiku tier.
         required: false
@@ -101,6 +119,12 @@ jobs:
           ANTHROPIC_DEFAULT_HAIKU_MODEL: ${{ inputs.haiku_model || secrets.ANTHROPIC_DEFAULT_HAIKU_MODEL }}
           ANTHROPIC_DEFAULT_OPUS_MODEL: ${{ inputs.opus_model || secrets.ANTHROPIC_DEFAULT_OPUS_MODEL }}
           ANTHROPIC_DEFAULT_SONNET_MODEL: ${{ inputs.sonnet_model || secrets.ANTHROPIC_DEFAULT_SONNET_MODEL }}
+          LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+          LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+          LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+          LANGFUSE_TRACING_ENVIRONMENT: ${{ secrets.LANGFUSE_TRACING_ENVIRONMENT }}
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          MLFLOW_EXPERIMENT_NAME: ${{ secrets.MLFLOW_EXPERIMENT_NAME }}
           GITHUB_TOKEN: ${{ github.token }}
           REVIEW_CHECKOUT: ${{ github.workspace }}/review-target
           REVIEW_INSTRUCTIONS: ${{ inputs.instructions }}

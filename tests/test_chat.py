@@ -160,6 +160,49 @@ def test_chat_uses_explicit_config_over_environment(
     assert github.closed is True
 
 
+@pytest.mark.parametrize(
+    ("langfuse", "mlflow"),
+    [
+        (None, None),
+        (LangfuseConfig(public_key="pk", secret_key="sk"), None),
+        (None, MLflowConfig(tracking_uri="http://mlflow")),
+        (
+            LangfuseConfig(public_key="pk", secret_key="sk"),
+            MLflowConfig(tracking_uri="http://mlflow"),
+        ),
+    ],
+)
+def test_chat_tracing_configuration_matrix(
+    langfuse: LangfuseConfig | None,
+    mlflow: MLflowConfig | None,
+) -> None:
+    tracing_configs: list[dict[str, Any]] = []
+
+    def capture_tracing(**kwargs: Any) -> list[Any]:
+        tracing_configs.append(kwargs)
+        return []
+
+    exit_code = main(
+        config=ChatConfig(
+            github_token="test-token",
+            model="gpt-test",
+            api_key="test-key",
+            langfuse=langfuse,
+            mlflow=mlflow,
+        ),
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: FakeGithubClient(),
+        model_factory=lambda **_: DeterministicInquiryModel(),
+        tracing_factory=capture_tracing,
+        tracing_flush=lambda **_: None,
+    )
+
+    assert exit_code == 0
+    assert tracing_configs == [{"langfuse": langfuse, "mlflow": mlflow}]
+
+
 def test_chat_reports_github_client_startup_failure() -> None:
     output = StringIO()
     errors = StringIO()

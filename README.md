@@ -190,11 +190,15 @@ OPENAI_MODEL=gpt-5-mini
 OPENAI_API_KEY=your-openai-api-key
 REVIEW_LOG_LEVEL=INFO
 # BASE_URL=https://your-compatible-endpoint/v1
-# Optional Langfuse tracing:
+# Optional Langfuse tracing (enable with both keys):
 LANGFUSE_PUBLIC_KEY=pk-lf-...
 LANGFUSE_SECRET_KEY=sk-lf-...
 LANGFUSE_BASE_URL=https://cloud.langfuse.com
 LANGFUSE_TRACING_ENVIRONMENT=development
+# Optional MLflow tracing (enable with a tracking URI):
+# MLFLOW_TRACKING_URI=http://localhost:5000
+# MLFLOW_EXPERIMENT_NAME=review-sheep
+# Set LANGFUSE_TRACING_ENABLED=false to disable Langfuse explicitly.
 ```
 
 ```bash
@@ -231,18 +235,56 @@ and structured Findings. Credentials and complete source/diff contents are not
 logged. Both Chat routes remain read-only and never post reviews, comments, or
 Findings to GitHub.
 
-Langfuse tracing is optional and automatically activates when both
-`LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are present. Each user turn is a
-`review-sheep-chat-turn` trace; all turns from one terminal process share a
-generated Langfuse session ID. The callback attached to the outer Chat
-LangGraph propagates into intent classification, Inquiry, Manifest Review, and
-the Lens agents. Set `LANGFUSE_TRACING_ENABLED=false` to explicitly disable it.
-The client flushes queued spans before the CLI exits. See the
+### Optional multi-backend tracing
+
+Tracing is opt-in and each backend is configured independently:
+
+- Langfuse activates when `LANGFUSE_PUBLIC_KEY` and `LANGFUSE_SECRET_KEY` are
+  both present. `LANGFUSE_BASE_URL` and `LANGFUSE_TRACING_ENVIRONMENT` are
+  optional; `LANGFUSE_TRACING_ENABLED=false` disables it explicitly.
+- MLflow activates when `MLFLOW_TRACKING_URI` is present. The optional
+  `MLFLOW_EXPERIMENT_NAME` defaults to `review-sheep`.
+- Set both groups to send the same Chat Review turn to both backends. A backend
+  initialization failure is logged and does not disable the other backend.
+
+Each Chat user turn is a `review-sheep-chat-turn` trace. The outer Chat
+LangGraph callback propagates into intent classification, Inquiry, Manifest
+Review, and all Lens agents. The CLI flushes configured backends before exit;
+flush failures are logged without replacing the Chat result. See the
 [Langfuse LangGraph integration](https://langfuse.com/guides/cookbook/integration_langgraph).
 
-Tracing sends prompts, model responses, graph state, and tool activity to the
-configured Langfuse project. Use a Langfuse deployment and retention policy
-appropriate for the repositories being reviewed.
+The CI entrypoint uses the same environment variables. Its root trace is named
+`review-sheep-ci-review` and uses the stable correlation session
+`ci:<repo>#<number>`, including for parallel checkout Lenses. For the reusable
+GitHub Actions workflow, pass the optional tracing values through the
+`LANGFUSE_*` and `MLFLOW_*` workflow-call secrets shown below.
+
+Tracing callbacks can observe prompts, model responses, LangGraph state, tool
+names, tool arguments/results, repository and pull-request metadata, and the
+source or diff content included in model/tool activity. Manifest Review sends
+virtual manifest/diff data; CI Review can send file and diff content read from
+the fixed checkout. Review Sheep does not redact repository content before the
+callback receives it, so do not enable tracing for repositories or prompts that
+the configured backend must not store.
+
+The same callback events are offered to both adapters, but each backend
+serializes them using its own schema: Langfuse receives LangChain/LangGraph
+observations with the configured session, tags, run names, prompts, outputs,
+and tool observations; MLflow receives corresponding LangChain spans under the
+configured tracking URI and experiment. Model metadata such as provider/model
+names and invocation metadata may also be included by the LangChain tracer.
+The exact fields depend on the installed backend SDK version, so treat both
+destinations as capable of receiving the full categories above rather than
+assuming that a prompt or diff is private merely because it is not in a
+top-level Review result.
+
+Treat the Langfuse project and MLflow tracking server/experiment as sensitive
+data destinations: restrict access to the review team, choose retention and
+regional policies appropriate for the repositories, and use a self-hosted or
+isolated deployment when required by policy. Backend retention and deletion are
+controlled by those services; disable tracing or remove the credentials when
+the review data must remain offline. Tracing metadata is correlation aid, not
+an authorization boundary.
 
 ## GitHub Actions PR Review
 
@@ -268,6 +310,11 @@ it with:
   override the built-in Claude model IDs; and
 - optional Actions variables `REVIEW_MODEL_TIER` (`haiku`, `sonnet`, or `opus`,
   default `sonnet`) and `REVIEW_INSTRUCTIONS` control the Review.
+- optional Actions secrets `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`,
+  `LANGFUSE_BASE_URL`, and `LANGFUSE_TRACING_ENVIRONMENT` configure Langfuse;
+- optional Actions secrets `MLFLOW_TRACKING_URI` and
+  `MLFLOW_EXPERIMENT_NAME` configure MLflow; and
+- set both backend groups to send one CI Review to both tracing systems.
 
 If the gateway URL is sensitive, store it as `ANTHROPIC_BASE_URL` under
 Actions secrets instead of variables; the workflow accepts either source.
@@ -307,6 +354,12 @@ jobs:
       ANTHROPIC_AUTH_TOKEN: ${{ secrets.ANTHROPIC_AUTH_TOKEN }}
       ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
       ANTHROPIC_CUSTOM_HEADERS: ${{ secrets.ANTHROPIC_CUSTOM_HEADERS }}
+      LANGFUSE_PUBLIC_KEY: ${{ secrets.LANGFUSE_PUBLIC_KEY }}
+      LANGFUSE_SECRET_KEY: ${{ secrets.LANGFUSE_SECRET_KEY }}
+      LANGFUSE_BASE_URL: ${{ secrets.LANGFUSE_BASE_URL }}
+      LANGFUSE_TRACING_ENVIRONMENT: ${{ secrets.LANGFUSE_TRACING_ENVIRONMENT }}
+      MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+      MLFLOW_EXPERIMENT_NAME: ${{ secrets.MLFLOW_EXPERIMENT_NAME }}
 ```
 
 Replace both `REVIEW_SHEEP_SHA` placeholders with the same full Review Sheep

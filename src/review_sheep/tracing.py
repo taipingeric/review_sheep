@@ -182,8 +182,14 @@ def flush_tracing(
     mlflow_enabled: bool,
 ) -> None:
     """Flush all configured tracing backends independently."""
-    flush_langfuse(
-        enabled=langfuse_enabled,
-        public_key=langfuse_public_key,
-    )
-    flush_mlflow(enabled=mlflow_enabled)
+    try:
+        flush_langfuse(
+            enabled=langfuse_enabled,
+            public_key=langfuse_public_key,
+        )
+    except Exception:
+        logger.exception("tracing.langfuse.flush_failed")
+    try:
+        flush_mlflow(enabled=mlflow_enabled)
+    except Exception:
+        logger.exception("tracing.mlflow.flush_failed")
