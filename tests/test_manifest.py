@@ -42,7 +42,7 @@ class FakeLensAgent:
     def __init__(self, finding: dict[str, Any]) -> None:
         self.finding = finding
         self.calls: list[dict[str, Any]] = []
-        self.configs: list[RunnableConfig | None] = []
+        self.configs: list[RunnableConfig] = []
 
     def invoke(
         self,
@@ -54,9 +54,7 @@ class FakeLensAgent:
         return {"structured_response": {"findings": [self.finding]}}
 
 
-def _fake_lens_agent(
-    schema: Any, agents: list[FakeLensAgent]
-) -> FakeLensAgent:
+def _fake_lens_agent(schema: Any, agents: list[FakeLensAgent]) -> FakeLensAgent:
     lens = {
         manifest_module.CorrectnessResult: "correctness",
         manifest_module.SecurityResult: "security",

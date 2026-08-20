@@ -4,13 +4,11 @@ from pathlib import Path
 
 
 def test_publish_workflow_builds_and_publishes_via_trusted_publishing() -> None:
-    workflow = (
-        Path(__file__).parents[1] / ".github/workflows/publish.yml"
-    ).read_text()
+    workflow = (Path(__file__).parents[1] / ".github/workflows/publish.yml").read_text()
 
     assert "release:" in workflow
     assert "types: [published]" in workflow
-    assert 'tags:' in workflow
+    assert "tags:" in workflow
     assert "'v*'" in workflow or '"v*"' in workflow
 
     assert "contents: read" in workflow

@@ -4,6 +4,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 
 from review_sheep import Review, ReviewError, ReviewOperation
@@ -31,7 +32,7 @@ class FakeReviewer:
 class TraceRecordingReviewer(FakeReviewer):
     def __init__(self, result: Review | ReviewError) -> None:
         super().__init__(result)
-        self.configs: list[dict[str, Any]] = []
+        self.configs: list[RunnableConfig] = []
 
     def review(self, *, repo: str, number: int) -> Review | ReviewError:
         self.configs.append(ensure_config())

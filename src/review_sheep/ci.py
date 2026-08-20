@@ -10,6 +10,7 @@ from collections.abc import Callable, Sequence
 from typing import Any, TextIO
 
 from langchain_core.runnables.config import ensure_config, set_config_context
+
 from review_sheep.checkout import GitCheckoutSource
 from review_sheep.config import LangfuseConfig, MLflowConfig
 from review_sheep.domain import Review, ReviewError
@@ -189,9 +190,7 @@ def main(
             tracing_flush(
                 langfuse_enabled=langfuse_config is not None,
                 langfuse_public_key=(
-                    langfuse_config.public_key
-                    if langfuse_config is not None
-                    else None
+                    langfuse_config.public_key if langfuse_config is not None else None
                 ),
                 mlflow_enabled=mlflow_config is not None,
             )
