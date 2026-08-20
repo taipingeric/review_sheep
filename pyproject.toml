@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "review-sheep"
-version = "0.1.0"
+version = "0.1.1"
 description = "Review Sheep — An AI agent that reviews pull requests before they join the flock."
 readme = "README.md"
 requires-python = ">=3.11"
