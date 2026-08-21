@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import logging
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
+import pytest
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 
 from review_sheep import Review, ReviewError, ReviewOperation
 from review_sheep.ci import main
+from review_sheep.config import CIConfig, LangfuseConfig, MLflowConfig
 
 
 class FakeGithubClient:
@@ -59,6 +62,30 @@ def _empty_review() -> Review:
     )
 
 
+def _ci_config(
+    *,
+    checkout: str = "/workspace",
+    model_tier: Literal["haiku", "sonnet", "opus"] = "sonnet",
+    model: str = "gateway-sonnet",
+    langfuse: LangfuseConfig | None = None,
+    mlflow: MLflowConfig | None = None,
+) -> CIConfig:
+    return CIConfig(
+        repo="acme/widgets",
+        pull_request_number=42,
+        checkout=checkout,
+        instructions="Focus on authorization.",
+        model_tier=model_tier,
+        model=model,
+        github_token="github-token",
+        anthropic_auth_token="auth-token",
+        base_url="https://gateway.example.com",
+        custom_headers="X-Team: review-sheep",
+        langfuse=langfuse,
+        mlflow=mlflow,
+    )
+
+
 def test_ci_prints_one_report_and_closes_github_client(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -79,16 +106,7 @@ def test_ci_prints_one_report_and_closes_github_client(
         return "test:model"
 
     exit_code = main(
-        [
-            "--repo",
-            "acme/widgets",
-            "--pr-number",
-            "42",
-            "--checkout",
-            str(tmp_path),
-            "--instructions",
-            "Focus on authorization.",
-        ],
+        config=_ci_config(checkout=str(tmp_path)),
         output=output,
         error=errors,
         github_factory=lambda _: github,
@@ -144,14 +162,11 @@ def test_ci_traces_review_with_both_backends_and_flushes_afterward(
         flush_configs.append(kwargs)
 
     exit_code = main(
-        [
-            "--repo",
-            "acme/widgets",
-            "--pr-number",
-            "42",
-            "--checkout",
-            str(tmp_path),
-        ],
+        config=_ci_config(
+            checkout=str(tmp_path),
+            langfuse=LangfuseConfig(public_key="pk-ci", secret_key="sk-ci"),
+            mlflow=MLflowConfig(tracking_uri="http://mlflow-ci"),
+        ),
         output=output,
         error=errors,
         github_factory=lambda _: github,
@@ -196,14 +211,7 @@ def test_ci_tracing_initialization_failure_does_not_change_review_result(
         raise RuntimeError("MLflow flush unavailable")
 
     exit_code = main(
-        [
-            "--repo",
-            "acme/widgets",
-            "--pr-number",
-            "42",
-            "--checkout",
-            str(tmp_path),
-        ],
+        config=_ci_config(checkout=str(tmp_path)),
         output=StringIO(),
         error=StringIO(),
         github_factory=lambda _: github,
@@ -234,14 +242,7 @@ def test_ci_returns_review_error_as_failed_exit_code(
     )
 
     exit_code = main(
-        [
-            "--repo",
-            "acme/widgets",
-            "--pr-number",
-            "42",
-            "--checkout",
-            str(tmp_path),
-        ],
+        config=_ci_config(checkout=str(tmp_path)),
         output=StringIO(),
         error=errors,
         github_factory=lambda _: github,
@@ -273,12 +274,6 @@ def test_ci_requires_pull_request_context_before_creating_clients(
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
-    (tmp_path / ".env").write_text(
-        "GITHUB_REPOSITORY=acme/widgets\n"
-        "REVIEW_PR_NUMBER=42\n"
-        "GITHUB_TOKEN=github-token-from-dotenv\n"
-    )
-    errors = StringIO()
     github_calls = 0
 
     def github_factory(_: str) -> FakeGithubClient:
@@ -286,15 +281,8 @@ def test_ci_requires_pull_request_context_before_creating_clients(
         github_calls += 1
         return FakeGithubClient()
 
-    exit_code = main(
-        [],
-        output=StringIO(),
-        error=errors,
-        github_factory=github_factory,
-    )
-
-    assert exit_code == 2
-    assert errors.getvalue() == "error: --repo or GITHUB_REPOSITORY is required\n"
+    with pytest.raises(RuntimeError, match="REVIEW_PR_NUMBER is not configured"):
+        CIConfig.from_environment({})
     assert github_calls == 0
 
 
@@ -348,16 +336,11 @@ def test_ci_can_select_the_opus_gateway_model(monkeypatch: Any, tmp_path: Path) 
         return "test:model"
 
     exit_code = main(
-        [
-            "--repo",
-            "acme/widgets",
-            "--pr-number",
-            "42",
-            "--checkout",
-            str(tmp_path),
-            "--model-tier",
-            "opus",
-        ],
+        config=_ci_config(
+            checkout=str(tmp_path),
+            model_tier="opus",
+            model="gateway-opus",
+        ),
         output=StringIO(),
         error=StringIO(),
         github_factory=lambda _: FakeGithubClient(),
@@ -367,3 +350,83 @@ def test_ci_can_select_the_opus_gateway_model(monkeypatch: Any, tmp_path: Path) 
 
     assert exit_code == 0
     assert selected_models == ["gateway-opus"]
+
+
+def test_ci_uses_explicit_config_over_environment(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("GITHUB_TOKEN", "environment-github-token")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "environment-auth-token")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://environment.example")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "environment-model")
+    github_tokens: list[str] = []
+    model_configs: list[dict[str, Any]] = []
+
+    def capture_github(token: str) -> FakeGithubClient:
+        github_tokens.append(token)
+        return FakeGithubClient()
+
+    def capture_model(**kwargs: Any) -> str:
+        model_configs.append(kwargs)
+        return "test:model"
+
+    exit_code = main(
+        config=_ci_config(checkout=str(tmp_path)),
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=capture_github,
+        model_factory=capture_model,
+        reviewer_factory=lambda **_: FakeReviewer(_empty_review()),
+    )
+
+    assert exit_code == 0
+    assert github_tokens == ["github-token"]
+    assert model_configs == [
+        {
+            "model": "gateway-sonnet",
+            "auth_token": "auth-token",
+            "base_url": "https://gateway.example.com",
+            "custom_headers": "X-Team: review-sheep",
+        }
+    ]
+
+
+def test_ci_redacts_credentials_from_logs_and_error_output(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="review_sheep.ci")
+    config = CIConfig(
+        repo="acme/widgets",
+        pull_request_number=42,
+        checkout=str(tmp_path),
+        instructions="",
+        model_tier="sonnet",
+        model="gateway-sonnet",
+        github_token="github-secret-injected",
+        anthropic_auth_token="anthropic-secret-injected",
+        base_url="https://gateway.example.com",
+        custom_headers="X-Secret: custom-header-secret",
+    )
+    errors = StringIO()
+
+    def unavailable_github(token: str) -> Any:
+        raise RuntimeError(
+            f"token={token} auth={config.anthropic_auth_token} "
+            "header=custom-header-secret"
+        )
+
+    exit_code = main(
+        config=config,
+        output=StringIO(),
+        error=errors,
+        github_factory=unavailable_github,
+    )
+
+    assert exit_code == 1
+    assert "github-secret-injected" not in errors.getvalue()
+    assert "anthropic-secret-injected" not in errors.getvalue()
+    assert "custom-header-secret" not in errors.getvalue()
+    assert "github-secret-injected" not in caplog.text
+    assert "anthropic-secret-injected" not in caplog.text
+    assert "custom-header-secret" not in caplog.text
+    assert "[redacted]" in errors.getvalue()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from typing import Literal, cast
 
 
 def _required(value: str, name: str) -> str:
@@ -90,6 +91,146 @@ class MLflowConfig:
         return cls(
             tracking_uri=tracking_uri,
             experiment_name=values.get("MLFLOW_EXPERIMENT_NAME", "review-sheep"),
+        )
+
+
+@dataclass(frozen=True)
+class CIConfig:
+    """Explicit runtime configuration for one non-interactive Review."""
+
+    repo: str
+    pull_request_number: int
+    checkout: str
+    instructions: str
+    model_tier: Literal["haiku", "sonnet", "opus"]
+    model: str
+    github_token: str = field(repr=False)
+    anthropic_auth_token: str = field(repr=False)
+    base_url: str = field(repr=False)
+    custom_headers: str = field(default="", repr=False)
+    review_log_level: str = "INFO"
+    langfuse: LangfuseConfig | None = None
+    mlflow: MLflowConfig | None = None
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "repo", _required(self.repo, "repo"))
+        if self.pull_request_number <= 0:
+            raise ValueError("pull_request_number must be positive")
+        object.__setattr__(self, "checkout", _required(self.checkout, "checkout"))
+        object.__setattr__(self, "instructions", self.instructions.strip())
+        tier = self.model_tier.strip().lower()
+        if tier not in {"haiku", "sonnet", "opus"}:
+            raise ValueError("model_tier must be haiku, sonnet, or opus")
+        object.__setattr__(self, "model_tier", tier)
+        object.__setattr__(self, "model", _required(self.model, "model"))
+        object.__setattr__(
+            self,
+            "github_token",
+            _required(self.github_token, "github_token"),
+        )
+        object.__setattr__(
+            self,
+            "anthropic_auth_token",
+            _required(self.anthropic_auth_token, "anthropic_auth_token"),
+        )
+        object.__setattr__(self, "base_url", _required(self.base_url, "base_url"))
+        object.__setattr__(self, "custom_headers", self.custom_headers.strip())
+        object.__setattr__(
+            self,
+            "review_log_level",
+            self.review_log_level.strip().upper() or "INFO",
+        )
+
+    @classmethod
+    def from_environment(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        repo: str | None = None,
+        pull_request_number: int | None = None,
+        checkout: str | None = None,
+        instructions: str | None = None,
+        model_tier: str | None = None,
+        model: str | None = None,
+        github_token: str | None = None,
+        anthropic_auth_token: str | None = None,
+        base_url: str | None = None,
+        custom_headers: str | None = None,
+    ) -> CIConfig:
+        """Build CI config from environment, with explicit values winning."""
+        values = os.environ if environ is None else environ
+        resolved_tier = (
+            model_tier
+            if model_tier is not None
+            else values.get("REVIEW_MODEL_TIER", "sonnet")
+        )
+        resolved_tier = resolved_tier.strip().lower()
+        if resolved_tier not in {"haiku", "sonnet", "opus"}:
+            raise RuntimeError("REVIEW_MODEL_TIER must be haiku, sonnet, or opus")
+        resolved_tier = cast(Literal["haiku", "sonnet", "opus"], resolved_tier)
+
+        raw_pr_number = (
+            str(pull_request_number)
+            if pull_request_number is not None
+            else _environment_required(values, "REVIEW_PR_NUMBER")
+        )
+        try:
+            resolved_pr_number = int(raw_pr_number)
+        except ValueError as error:
+            raise RuntimeError("REVIEW_PR_NUMBER must be a positive integer") from error
+        if resolved_pr_number <= 0:
+            raise RuntimeError("REVIEW_PR_NUMBER must be a positive integer")
+
+        model_name = (
+            model
+            if model is not None
+            else _environment_required(
+                values,
+                f"ANTHROPIC_DEFAULT_{resolved_tier.upper()}_MODEL",
+            )
+        )
+        return cls(
+            repo=(
+                repo
+                if repo is not None
+                else _environment_required(values, "GITHUB_REPOSITORY")
+            ),
+            pull_request_number=resolved_pr_number,
+            checkout=(
+                checkout
+                if checkout is not None
+                else values.get("REVIEW_CHECKOUT", values.get("GITHUB_WORKSPACE", "."))
+            ),
+            instructions=(
+                instructions
+                if instructions is not None
+                else values.get("REVIEW_INSTRUCTIONS", "")
+            ),
+            model_tier=resolved_tier,
+            model=model_name,
+            github_token=(
+                github_token
+                if github_token is not None
+                else _environment_required(values, "GITHUB_TOKEN")
+            ),
+            anthropic_auth_token=(
+                anthropic_auth_token
+                if anthropic_auth_token is not None
+                else _environment_required(values, "ANTHROPIC_AUTH_TOKEN")
+            ),
+            base_url=(
+                base_url
+                if base_url is not None
+                else _environment_required(values, "ANTHROPIC_BASE_URL")
+            ),
+            custom_headers=(
+                custom_headers
+                if custom_headers is not None
+                else values.get("ANTHROPIC_CUSTOM_HEADERS", "")
+            ),
+            review_log_level=values.get("REVIEW_LOG_LEVEL", "INFO"),
+            langfuse=LangfuseConfig.from_environment(values),
+            mlflow=MLflowConfig.from_environment(values),
         )
 
 
