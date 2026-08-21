@@ -181,29 +181,61 @@ Install the project with the provider extra you want to test. For OpenAI:
 uv sync --extra openai --extra dev
 ```
 
-The interactive script reads `GITHUB_TOKEN`, `OPENAI_MODEL`, `OPENAI_API_KEY`,
-and optional `BASE_URL` and `REVIEW_LOG_LEVEL` from `.env`:
+### Configuration and secret injection
 
-```dotenv
-GITHUB_TOKEN=your-read-only-github-token
-OPENAI_MODEL=gpt-5-mini
-OPENAI_API_KEY=your-openai-api-key
-REVIEW_LOG_LEVEL=INFO
-# BASE_URL=https://your-compatible-endpoint/v1
-# Optional Langfuse tracing (enable with both keys):
-LANGFUSE_PUBLIC_KEY=pk-lf-...
-LANGFUSE_SECRET_KEY=sk-lf-...
-LANGFUSE_BASE_URL=https://cloud.langfuse.com
-LANGFUSE_TRACING_ENVIRONMENT=development
-# Optional MLflow tracing (enable with a tracking URI):
-# MLFLOW_TRACKING_URI=http://localhost:5000
-# MLFLOW_EXPERIMENT_NAME=review-sheep
-# Set LANGFUSE_TRACING_ENABLED=false to disable Langfuse explicitly.
+The library entrypoints consume explicit configuration objects. Construct a
+`ChatConfig` or `CIConfig` and pass it to `review_sheep.chat.main` or
+`review_sheep.ci.main` when embedding Review Sheep in an application. These
+core paths do not read process environment values or files.
+
+For example, an application can inject values from its own secret manager:
+
+```python
+from review_sheep import ChatConfig
+from review_sheep.chat import main
+
+config = ChatConfig(
+    github_token=get_secret("GITHUB_TOKEN"),
+    model=get_setting("OPENAI_MODEL"),
+    api_key=get_secret("OPENAI_API_KEY"),
+)
+main(config=config)
 ```
+
+The bundled scripts are process-environment adapters. The interactive script
+reads `GITHUB_TOKEN`, `OPENAI_MODEL`, `OPENAI_API_KEY`, and optional `BASE_URL`
+and `REVIEW_LOG_LEVEL` from the environment of the process that launches it:
 
 ```bash
+export GITHUB_TOKEN="<read-only-github-token>"
+export OPENAI_MODEL="<model-id>"
+export OPENAI_API_KEY="<provider-api-key>"
+export REVIEW_LOG_LEVEL="INFO"
+# Optional: export BASE_URL="<compatible-endpoint>/v1"
 uv run python scripts/review_chat.py
 ```
+
+The CI adapter uses the environment and command-line values documented in
+[GitHub Actions PR Review](#github-actions-pr-review). Its non-secret CLI
+arguments (`--repo`, `--pr-number`, `--checkout`, `--instructions`, and
+`--model-tier`) take precedence over their environment defaults. Explicit
+configuration passed directly to a library entrypoint takes precedence over
+all adapter inputs because the core entrypoint does not consult the
+environment. Keep GitHub and model credentials in process environment values,
+CI secret variables, or a secrets manager; never pass secrets as CLI
+arguments, commit them to a checkout, or put them in example files.
+
+Neither production entrypoint loads a local `.env` file. A local shell, CI
+secret adapter, or secrets manager must populate the process environment
+explicitly. The examples use placeholders only and do not require a checked-out
+`.env` file.
+
+The following optional tracing variables are read from the process environment:
+
+- Langfuse: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, optional
+  `LANGFUSE_BASE_URL`, `LANGFUSE_TRACING_ENVIRONMENT`, and
+  `LANGFUSE_TRACING_ENABLED=false`.
+- MLflow: `MLFLOW_TRACKING_URI` and optional `MLFLOW_EXPERIMENT_NAME`.
 
 Ask what Review Sheep can do, ask metadata questions, or request a changed-code
 Review naturally. The classifier selects the correct agent path; ReviewBot asks
