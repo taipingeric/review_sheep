@@ -56,6 +56,48 @@ def test_chat_config_disables_optional_tracing_from_environment() -> None:
     assert config.mlflow is None
 
 
+def test_chat_config_uses_safe_defaults_for_optional_values() -> None:
+    config = ChatConfig.from_environment(
+        {
+            "GITHUB_TOKEN": "github-token",
+            "OPENAI_MODEL": "gpt-injected",
+            "OPENAI_API_KEY": "model-key",
+            "BASE_URL": "   ",
+            "REVIEW_LOG_LEVEL": "   ",
+        }
+    )
+
+    assert config.base_url is None
+    assert config.review_log_level == "INFO"
+    assert config.langfuse is None
+    assert config.mlflow is None
+
+
+@pytest.mark.parametrize(
+    "environment",
+    [
+        {"LANGFUSE_PUBLIC_KEY": "public-key"},
+        {"LANGFUSE_SECRET_KEY": "secret-key"},
+        {"LANGFUSE_TRACING_ENABLED": "true"},
+    ],
+)
+def test_chat_config_rejects_partial_langfuse_configuration(
+    environment: dict[str, str],
+) -> None:
+    with pytest.raises(
+        RuntimeError,
+        match="LANGFUSE_PUBLIC_KEY and LANGFUSE_SECRET_KEY must both be configured",
+    ):
+        ChatConfig.from_environment(
+            {
+                "GITHUB_TOKEN": "github-token",
+                "OPENAI_MODEL": "gpt-injected",
+                "OPENAI_API_KEY": "model-key",
+                **environment,
+            }
+        )
+
+
 def test_chat_config_reports_missing_environment_value_without_echoing_secret() -> None:
     with pytest.raises(RuntimeError, match="OPENAI_API_KEY is not configured") as error:
         ChatConfig.from_environment(
@@ -138,4 +180,103 @@ def test_ci_config_reads_model_for_selected_tier_and_validates_required_values()
                 "ANTHROPIC_BASE_URL": "https://gateway.example",
                 "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
             }
+        )
+
+
+def test_ci_config_uses_workspace_fallback_and_normalizes_optional_values() -> None:
+    config = CIConfig.from_environment(
+        {
+            "GITHUB_REPOSITORY": "acme/widgets",
+            "REVIEW_PR_NUMBER": "42",
+            "GITHUB_WORKSPACE": "/github/workspace",
+            "GITHUB_TOKEN": "github-token",
+            "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+            "ANTHROPIC_BASE_URL": "https://gateway.example",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+            "REVIEW_LOG_LEVEL": " debug ",
+            "MLFLOW_TRACKING_URI": " http://mlflow ",
+            "MLFLOW_EXPERIMENT_NAME": "   ",
+        }
+    )
+
+    assert config.checkout == "/github/workspace"
+    assert config.instructions == ""
+    assert config.custom_headers == ""
+    assert config.review_log_level == "DEBUG"
+    assert config.mlflow == MLflowConfig(tracking_uri="http://mlflow")
+
+    default_checkout = CIConfig.from_environment(
+        {
+            "GITHUB_REPOSITORY": "acme/widgets",
+            "REVIEW_PR_NUMBER": "42",
+            "GITHUB_TOKEN": "github-token",
+            "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+            "ANTHROPIC_BASE_URL": "https://gateway.example",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+        }
+    )
+    assert default_checkout.checkout == "."
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        (
+            {"REVIEW_MODEL_TIER": "large"},
+            "REVIEW_MODEL_TIER must be haiku, sonnet, or opus",
+        ),
+        (
+            {"REVIEW_PR_NUMBER": "not-a-number"},
+            "REVIEW_PR_NUMBER must be a positive integer",
+        ),
+        (
+            {"REVIEW_PR_NUMBER": "0"},
+            "REVIEW_PR_NUMBER must be a positive integer",
+        ),
+    ],
+)
+def test_ci_config_rejects_invalid_environment_values(
+    environment: dict[str, str], message: str
+) -> None:
+    values = {
+        "GITHUB_REPOSITORY": "acme/widgets",
+        "REVIEW_PR_NUMBER": "42",
+        "GITHUB_TOKEN": "github-token",
+        "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+        "ANTHROPIC_BASE_URL": "https://gateway.example",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+        **environment,
+    }
+
+    with pytest.raises(RuntimeError, match=message):
+        CIConfig.from_environment(values)
+
+
+def test_ci_config_rejects_invalid_model_tier_and_non_positive_number_directly() -> (
+    None
+):
+    with pytest.raises(ValueError, match="model_tier must be haiku, sonnet, or opus"):
+        CIConfig(
+            repo="acme/widgets",
+            pull_request_number=42,
+            checkout=".",
+            instructions="",
+            model_tier="invalid",  # type: ignore[arg-type]
+            model="gateway-sonnet",
+            github_token="github-token",
+            anthropic_auth_token="anthropic-token",
+            base_url="https://gateway.example",
+        )
+
+    with pytest.raises(ValueError, match="pull_request_number must be positive"):
+        CIConfig(
+            repo="acme/widgets",
+            pull_request_number=0,
+            checkout=".",
+            instructions="",
+            model_tier="sonnet",
+            model="gateway-sonnet",
+            github_token="github-token",
+            anthropic_auth_token="anthropic-token",
+            base_url="https://gateway.example",
         )
