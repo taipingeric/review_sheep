@@ -152,6 +152,35 @@ else:
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
 
+### Add caller-provided Review tools
+
+Both Review constructors accept optional LangChain tools. Review Sheep gives
+each Lens the built-in repository or Manifest tools plus the caller-provided
+tools, so a Review can use read-only context such as database schema or table
+metadata:
+
+```python
+from langchain_core.tools import tool
+
+@tool
+def fetch_db_metadata(table: str) -> str:
+    """Fetch read-only metadata for one database table."""
+    return metadata_client.describe_table(table)
+
+reviewer = create_deep_review_agent(
+    source=checkout,
+    model=model,
+    tools=[fetch_db_metadata],
+)
+```
+
+`create_manifest_review_agent` and `review_pull_request_tool` accept the same
+`tools` argument. Tools are owned and authorized by the caller; Review Sheep
+does not manage their credentials or enforce that external operations are
+read-only. Prefer narrowly scoped access, bounded results, and thread-safe
+implementations because all Lenses run concurrently. Tool results are sent to
+the model and can provide evidence for Findings.
+
 ## Use Review as a LangChain tool
 
 `review_pull_request_tool` wraps the Manifest Review workflow — fetching a

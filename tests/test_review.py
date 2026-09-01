@@ -8,6 +8,7 @@ from deepagents.backends import FilesystemBackend
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
+from langchain_core.tools import BaseTool, tool
 from pydantic import ValidationError
 
 from review_sheep import (
@@ -75,8 +76,13 @@ class FailingReviewRunner:
 
 
 class FakeLensAgent:
-    def __init__(self, finding: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        finding: dict[str, Any],
+        caller_tool: BaseTool | None = None,
+    ) -> None:
         self.finding = finding
+        self.caller_tool = caller_tool
         self.calls: list[dict[str, Any]] = []
         self.configs: list[RunnableConfig] = []
 
@@ -86,6 +92,9 @@ class FakeLensAgent:
     ) -> dict[str, Any]:
         self.calls.append(state)
         self.configs.append(ensure_config())
+        if self.caller_tool is not None:
+            metadata = self.caller_tool.invoke({"table": "orders"})
+            self.finding["description"] = f"Database metadata: {metadata}"
         return {"structured_response": {"findings": [self.finding]}}
 
 
@@ -206,6 +215,65 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
         for agent in created_agents
     )
     assert [finding.lens for finding in result.findings] == list(Lens)
+
+
+def test_deep_review_exposes_caller_tools_to_every_lens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkout = _checkout(tmp_path)
+    source = FakeCheckoutSource(checkout)
+    metadata_requests: list[str] = []
+    factory_calls: list[dict[str, Any]] = []
+
+    @tool
+    def fetch_db_metadata(table: str) -> str:
+        """Fetch read-only metadata for one database table."""
+        metadata_requests.append(table)
+        return "orders(id, total)"
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        factory_calls.append(kwargs)
+        caller_tool = next(
+            candidate
+            for candidate in kwargs["tools"]
+            if candidate.name == "fetch_db_metadata"
+        )
+        schema = kwargs["response_format"].schema
+        lens = {
+            lenses_module.CorrectnessResult: "correctness",
+            lenses_module.SecurityResult: "security",
+            lenses_module.ConventionsAndTestsResult: "conventions-and-tests",
+        }[schema]
+        return FakeLensAgent(
+            {
+                "description": "Database metadata not fetched yet.",
+                "location": {"path": "src/example.py"},
+                "severity": "medium",
+                "confidence": "likely",
+                "lens": lens,
+            },
+            caller_tool=caller_tool,
+        )
+
+    monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_deep_review_agent(
+        source=source,
+        model="openai:gpt-test",
+        tools=[fetch_db_metadata],
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert metadata_requests == ["orders"] * len(Lens)
+    assert all(
+        [candidate.name for candidate in call["tools"]]
+        == ["list_changed_files", "get_diff", "fetch_db_metadata"]
+        for call in factory_calls
+    )
+    assert all(
+        "Database metadata: orders(id, total)" in finding.description
+        for finding in result.findings
+    )
 
 
 def test_deep_review_propagates_trace_config_to_every_lens(

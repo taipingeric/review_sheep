@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from deepagents import create_deep_agent as _create_deep_agent
@@ -12,6 +13,7 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config, set_config_context
+from langchain_core.tools import BaseTool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
@@ -88,9 +90,11 @@ class ManifestReviewRunner:
         *,
         model: str | BaseChatModel,
         instructions: str = "",
+        tools: Sequence[BaseTool] = (),
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
+        self._tools = tuple(tools)
 
     def run(
         self,
@@ -122,6 +126,7 @@ class ManifestReviewRunner:
         logger.info("manifest.lens.start lens=%s", lens.value)
         agent = _create_deep_agent(
             model=self._model,
+            tools=[*self._tools],
             backend=StateBackend(),
             response_format=ToolStrategy(LENS_RESULT_SCHEMAS[lens]),
             system_prompt=(
@@ -339,9 +344,14 @@ def create_manifest_review_agent(
     source: SnapshotSource,
     model: str | BaseChatModel,
     instructions: str = "",
+    tools: Sequence[BaseTool] = (),
 ) -> ManifestReviewAgent:
     """Create the production Manifest Review workflow used by Chat."""
     return ManifestReviewAgent(
         source=source,
-        runner=ManifestReviewRunner(model=model, instructions=instructions),
+        runner=ManifestReviewRunner(
+            model=model,
+            instructions=instructions,
+            tools=tools,
+        ),
     )

@@ -237,6 +237,14 @@ independent tool calls are requested in the same assistant message;
 dependent calls remain sequential. The configured gateway must support
 concurrent model requests and parallel tool results.
 
+Callers may inject additional LangChain tools into either Review adapter. Each
+Lens receives the adapter's built-in tools together with the caller-provided
+tools. Review Sheep treats those tools as caller-owned capabilities: callers
+must provide their own credentials, authorization, result bounds, and
+thread-safe implementations. External tool results are available to the model
+as review evidence, but the library does not enforce that external operations
+are read-only.
+
 Each Lens receives a `FilesystemBackend` rooted at the checkout with virtual
 path confinement. Deepagents filesystem write permission is denied for all
 paths, and the system prompt also prohibits mutation. The custom Git tools use

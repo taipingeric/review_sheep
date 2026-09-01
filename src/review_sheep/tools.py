@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
@@ -21,6 +22,7 @@ def review_pull_request_tool(
     source: SnapshotSource,
     *,
     instructions: str = "",
+    tools: Sequence[BaseTool] = (),
 ) -> BaseTool:
     """Build one LangChain tool that runs a full Manifest Review.
 
@@ -31,7 +33,10 @@ def review_pull_request_tool(
     ``render_report`` together by hand.
     """
     agent = create_manifest_review_agent(
-        source=source, model=model, instructions=instructions
+        source=source,
+        model=model,
+        instructions=instructions,
+        tools=tools,
     )
 
     @tool

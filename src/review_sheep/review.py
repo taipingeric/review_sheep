@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 
@@ -74,9 +75,11 @@ class DeepAgentReviewRunner:
         *,
         model: str | BaseChatModel,
         instructions: str = "",
+        tools: Sequence[BaseTool] = (),
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
+        self._tools = tuple(tools)
 
     def run(
         self,
@@ -109,7 +112,7 @@ class DeepAgentReviewRunner:
         logger.info("checkout.lens.start lens=%s", lens.value)
         agent = _create_deep_agent(
             model=self._model,
-            tools=_checkout_tools(checkout),
+            tools=[*_checkout_tools(checkout), *self._tools],
             backend=FilesystemBackend(root_dir=checkout.root, virtual_mode=True),
             permissions=[
                 FilesystemPermission(
@@ -292,9 +295,14 @@ def create_deep_review_agent(
     source: ReviewCheckoutSource,
     model: str | BaseChatModel,
     instructions: str = "",
+    tools: Sequence[BaseTool] = (),
 ) -> ReviewAgent:
     """Create the production Review workflow with one deep agent per Lens."""
     return create_review_agent(
         source=source,
-        runner=DeepAgentReviewRunner(model=model, instructions=instructions),
+        runner=DeepAgentReviewRunner(
+            model=model,
+            instructions=instructions,
+            tools=tools,
+        ),
     )

@@ -7,6 +7,7 @@ from deepagents.backends import StateBackend
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
+from langchain_core.tools import BaseTool, tool
 
 from review_sheep import (
     Finding,
@@ -39,8 +40,13 @@ class FailingSnapshotSource:
 
 
 class FakeLensAgent:
-    def __init__(self, finding: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        finding: dict[str, Any],
+        caller_tool: BaseTool | None = None,
+    ) -> None:
         self.finding = finding
+        self.caller_tool = caller_tool
         self.calls: list[dict[str, Any]] = []
         self.configs: list[RunnableConfig] = []
 
@@ -51,6 +57,9 @@ class FakeLensAgent:
     ) -> dict[str, Any]:
         self.calls.append(state)
         self.configs.append(config or ensure_config())
+        if self.caller_tool is not None:
+            metadata = self.caller_tool.invoke({"table": "orders"})
+            self.finding["description"] = f"Database metadata: {metadata}"
         return {"structured_response": {"findings": [self.finding]}}
 
 
@@ -161,6 +170,63 @@ def test_manifest_review_runs_every_lens_over_the_same_virtual_files(
         assert "Focus on regressions." in state["messages"][0]["content"]
     assert snapshots[0] == snapshots[1] == snapshots[2]
     assert '"base_sha": "base123"' in snapshots[0]["/manifest.json"]
+
+
+def test_manifest_review_exposes_caller_tools_to_every_lens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = FakeSnapshotSource(_snapshot())
+    metadata_requests: list[str] = []
+    factory_calls: list[dict[str, Any]] = []
+
+    @tool
+    def fetch_db_metadata(table: str) -> str:
+        """Fetch read-only metadata for one database table."""
+        metadata_requests.append(table)
+        return "orders(id, total)"
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        factory_calls.append(kwargs)
+        caller_tool = next(
+            candidate
+            for candidate in kwargs["tools"]
+            if candidate.name == "fetch_db_metadata"
+        )
+        schema = kwargs["response_format"].schema
+        lens = {
+            manifest_module.CorrectnessResult: "correctness",
+            manifest_module.SecurityResult: "security",
+            manifest_module.ConventionsAndTestsResult: "conventions-and-tests",
+        }[schema]
+        return FakeLensAgent(
+            {
+                "description": "Database metadata not fetched yet.",
+                "location": {"path": "src/example.py"},
+                "severity": "medium",
+                "confidence": "likely",
+                "lens": lens,
+            },
+            caller_tool=caller_tool,
+        )
+
+    monkeypatch.setattr(manifest_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_manifest_review_agent(
+        source=source,
+        model="openai:gpt-test",
+        tools=[fetch_db_metadata],
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert metadata_requests == ["orders"] * len(Lens)
+    assert all(
+        [candidate.name for candidate in call["tools"]] == ["fetch_db_metadata"]
+        for call in factory_calls
+    )
+    assert all(
+        "Database metadata: orders(id, total)" in finding.description
+        for finding in result.findings
+    )
 
 
 def test_manifest_review_propagates_trace_config_to_every_lens(
