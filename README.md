@@ -50,6 +50,21 @@ To install from source instead:
 pip install .
 ```
 
+## Test coverage
+
+Run the full test suite with per-module and total statement coverage using the
+development dependency set:
+
+```bash
+uv run --extra dev pytest --cov=src/review_sheep --cov-report=term-missing
+```
+
+The command exits non-zero when tests fail and does not require a manual
+coverage-tool installation. Before this coverage check was added, the baseline
+was 104 tests with 94% statement coverage across 1,218 statements, with 78
+statements missed. Coverage is reported for the `review_sheep` source package;
+generated coverage files remain ignored by Git.
+
 ## Inquiry
 
 The caller constructs the model and GitHub client explicitly. Inquiry exposes

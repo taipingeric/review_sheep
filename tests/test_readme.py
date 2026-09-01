@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 
@@ -20,3 +21,22 @@ def test_readme_documents_explicit_secret_injection_without_dotenv() -> None:
     assert "never pass secrets as CLI" in readme
     assert "do not require a checked-out" in readme
     assert not (root / ".env.example").exists()
+
+
+def test_project_documents_reproducible_coverage_checks() -> None:
+    root = Path(__file__).parents[1]
+    readme = (root / "README.md").read_text()
+    pyproject = tomllib.loads((root / "pyproject.toml").read_text())
+
+    assert (
+        "uv run --extra dev pytest --cov=src/review_sheep --cov-report=term-missing"
+        in readme
+    )
+    assert "baseline" in readme
+    assert "104 tests" in readme
+    assert "94%" in readme
+    assert "statement coverage" in readme
+    assert any(
+        dependency.startswith("pytest-cov")
+        for dependency in pyproject["project"]["optional-dependencies"]["dev"]
+    )
