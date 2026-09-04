@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -81,9 +83,13 @@ class FakeLensAgent:
         self,
         finding: dict[str, Any],
         caller_tool: BaseTool | None = None,
+        structured_response: Any | None = None,
+        on_invoke: Callable[[], Any] | None = None,
     ) -> None:
         self.finding = finding
         self.caller_tool = caller_tool
+        self.structured_response = structured_response
+        self.on_invoke = on_invoke
         self.calls: list[dict[str, Any]] = []
         self.configs: list[RunnableConfig] = []
 
@@ -93,10 +99,15 @@ class FakeLensAgent:
     ) -> dict[str, Any]:
         self.calls.append(state)
         self.configs.append(ensure_config())
+        if self.on_invoke is not None:
+            self.on_invoke()
         if self.caller_tool is not None:
             metadata = self.caller_tool.invoke({"table": "orders"})
             self.finding["description"] = f"Database metadata: {metadata}"
-        return {"structured_response": {"findings": [self.finding]}}
+        return {
+            "structured_response": self.structured_response
+            or {"findings": [self.finding]}
+        }
 
 
 def test_review_runs_over_one_fixed_checkout(tmp_path: Path) -> None:
@@ -235,6 +246,7 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
     ]
     factory_calls: list[dict[str, Any]] = []
     metadata_requests: list[str] = []
+    start_barrier = threading.Barrier(len(Lens) + len(custom_lenses), timeout=2)
 
     @tool
     def fetch_db_metadata(table: str) -> str:
@@ -257,15 +269,23 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
                 for custom in custom_lenses
                 if custom.identifier in kwargs["system_prompt"]
             )
+        finding = {
+            "description": f"Finding from {lens}.",
+            "location": {"path": "src/example.py"},
+            "severity": "medium",
+            "confidence": "likely",
+            "lens": lens,
+        }
+        structured_response = (
+            response_format.schema.model_validate({"findings": [finding]})
+            if lens not in built_in_lenses.values()
+            else None
+        )
         return FakeLensAgent(
-            {
-                "description": f"Finding from {lens}.",
-                "location": {"path": "src/example.py"},
-                "severity": "medium",
-                "confidence": "likely",
-                "lens": lens,
-            },
+            finding,
             caller_tool=fetch_db_metadata,
+            structured_response=structured_response,
+            on_invoke=start_barrier.wait,
         )
 
     monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
@@ -284,6 +304,7 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
         "migration-safety",
     ]
     assert len(factory_calls) == len(Lens) + len(custom_lenses)
+    assert source.calls == [{"repo": "acme/widgets", "number": 42}]
     assert metadata_requests == ["orders"] * (len(Lens) + len(custom_lenses))
     assert all(
         [candidate.name for candidate in call["tools"]]
