@@ -10,6 +10,7 @@ from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool, tool
 
 from review_sheep import (
+    CustomLens,
     Finding,
     Lens,
     ManifestReviewAgent,
@@ -227,6 +228,103 @@ def test_manifest_review_exposes_caller_tools_to_every_lens(
         "Database metadata: orders(id, total)" in finding.description
         for finding in result.findings
     )
+
+
+def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = FakeSnapshotSource(_snapshot())
+    custom_lenses = [
+        CustomLens(
+            identifier="api-compatibility",
+            instructions="Review public API compatibility.",
+        ),
+        CustomLens(
+            identifier="migration-safety",
+            instructions="Review database migration safety.",
+        ),
+    ]
+    factory_calls: list[dict[str, Any]] = []
+    agents: list[FakeLensAgent] = []
+    tool_requests: list[str] = []
+
+    @tool
+    def fetch_db_metadata(table: str) -> str:
+        """Fetch read-only metadata for one database table."""
+        tool_requests.append(table)
+        return "orders(id, total)"
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        factory_calls.append(kwargs)
+        schema = kwargs["response_format"].schema
+        built_in_lenses = {
+            manifest_module.CorrectnessResult: "correctness",
+            manifest_module.SecurityResult: "security",
+            manifest_module.ConventionsAndTestsResult: "conventions-and-tests",
+        }
+        identity = built_in_lenses.get(schema)
+        if identity is None:
+            identity = next(
+                custom.identifier
+                for custom in custom_lenses
+                if custom.identifier in kwargs["system_prompt"]
+            )
+        agent = FakeLensAgent(
+            {
+                "description": f"Finding from {identity}.",
+                "location": {"path": "src/example.py"},
+                "severity": "medium",
+                "confidence": "likely",
+                "lens": identity,
+            },
+            caller_tool=next(
+                candidate
+                for candidate in kwargs["tools"]
+                if candidate.name == "fetch_db_metadata"
+            ),
+        )
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(manifest_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_manifest_review_agent(
+        source=source,
+        model="openai:gpt-test",
+        tools=[fetch_db_metadata],
+        custom_lenses=custom_lenses,
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert source.calls == [("acme/widgets", 42)]
+    assert [finding.lens for finding in result.findings] == [
+        *list(Lens),
+        "api-compatibility",
+        "migration-safety",
+    ]
+    assert len(factory_calls) == len(Lens) + len(custom_lenses)
+    assert tool_requests == ["orders"] * (len(Lens) + len(custom_lenses))
+    snapshots = [
+        {path: data["content"] for path, data in agent.calls[0]["files"].items()}
+        for agent in agents
+    ]
+    assert snapshots[0] == snapshots[1] == snapshots[2] == snapshots[3] == snapshots[4]
+    custom_agents = [
+        agent
+        for agent in agents
+        if "api-compatibility" in agent.calls[0]["messages"][0]["content"]
+        or "migration-safety" in agent.calls[0]["messages"][0]["content"]
+    ]
+    assert len(custom_agents) == len(custom_lenses)
+    assert {
+        next(
+            custom.instructions
+            for custom in custom_lenses
+            if custom.instructions in call["system_prompt"]
+        )
+        for call in factory_calls
+        if any(custom.identifier in call["system_prompt"] for custom in custom_lenses)
+    } == {custom.instructions for custom in custom_lenses}
 
 
 def test_manifest_review_propagates_trace_config_to_every_lens(
