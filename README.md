@@ -179,6 +179,26 @@ built-in Finding serialization remains unchanged. The `instructions` value is
 the custom Lens's caller-owned, concern-specific review guidance; it does not
 change the built-in Lens definitions or the Review's shared snapshot contract.
 
+Pass the ordered definitions to `create_manifest_review_agent` or
+`review_pull_request_tool` to run them alongside the built-in Lenses. All
+Lenses receive the same Manifest snapshot, virtual diff files, and caller-owned
+tools; Findings are returned in built-in order followed by custom declaration
+order:
+
+```python
+custom_lenses = [
+    CustomLens(
+        identifier="api-compatibility",
+        instructions="Review public API changes for compatibility regressions.",
+    )
+]
+reviewer = create_manifest_review_agent(
+    source=source,
+    model=model,
+    custom_lenses=custom_lenses,
+)
+```
+
 ### Add caller-provided Review tools
 
 Both Review constructors accept optional LangChain tools. Review Sheep gives
