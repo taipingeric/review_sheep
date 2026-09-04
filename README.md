@@ -245,7 +245,18 @@ reviewer = create_deep_review_agent(
 does not manage their credentials or enforce that external operations are
 read-only. Prefer narrowly scoped access, bounded results, and thread-safe
 implementations because all Lenses run concurrently. Tool results are sent to
-the model and can provide evidence for Findings.
+the model and can provide evidence for Findings. Custom Lens definitions do not
+carry credentials themselves; inject credentials only through caller-owned tools
+with the authorization and secret-handling policy appropriate for your
+application.
+
+Custom Lens output is validated against the standard `Finding` fields and is
+returned unmerged after the built-in Findings, in the declaration order supplied
+to `custom_lenses`. The same identity appears in the `Review`, rendered Report,
+logs, and tracing metadata. If a Lens fails, the Review returns its existing
+`ReviewError` boundary with the failing Lens identity; successful partial results
+are exposed only where the surrounding public API already supports partial
+results.
 
 ## Use Review as a LangChain tool
 

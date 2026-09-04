@@ -234,8 +234,11 @@ Both Review adapters start all configured Lenses concurrently. Each worker
 receives a copy of the current tracing context, so Langfuse records sibling
 Lens observations under the same turn. Findings are flattened afterward in
 stable built-in order (`correctness`, `security`,
-`conventions-and-tests`), followed by Manifest custom Lenses in caller
-declaration order. Within a Lens,
+`conventions-and-tests`), followed by custom Lenses in caller declaration order.
+Each Lens child run adds its stable identity to the existing tracing metadata,
+tags, run name, and logging fields. A Lens failure remains inside the existing
+stage-specific `ReviewError` boundary and records the failing identity. Within a
+Lens,
 independent tool calls are requested in the same assistant message;
 dependent calls remain sequential. The configured gateway must support
 concurrent model requests and parallel tool results.
@@ -267,7 +270,8 @@ deduplication.
   range.
 - `Finding` combines `Location`, `Severity`, `Confidence`, and `Lens`.
 - `Review` records base/head SHA and the validated Findings.
-- `ReviewError` names the failed Manifest, checkout, or model stage.
+- `ReviewError` names the failed Manifest, checkout, or model stage and, for a
+  Lens failure, the failing Lens identity.
 - `Report` is derived human-facing text.
 - `InquiryAnswer` contains exactly one of `text` or `error`.
 

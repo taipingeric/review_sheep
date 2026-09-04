@@ -296,6 +296,7 @@ class ReviewError(BaseModel):
     operation: ReviewOperation
     error_type: str
     message: str
+    lens: LensIdentity | None = None
 
 
 class Report(BaseModel):

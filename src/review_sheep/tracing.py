@@ -6,9 +6,10 @@ import logging
 import os
 from collections.abc import Callable, Sequence
 from threading import Lock
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.runnables import RunnableConfig
+from langchain_core.runnables.config import ensure_config
 
 from review_sheep.config import LangfuseConfig, MLflowConfig
 
@@ -138,6 +139,26 @@ def tracing_turn_config(
             "review_sheep_turn": turn,
         },
     )
+
+
+def lens_run_config(*, config: RunnableConfig | None, lens: str) -> RunnableConfig:
+    """Add one Lens identity while preserving the parent trace context."""
+    effective = ensure_config(config)
+    metadata = {
+        **effective.get("metadata", {}),
+        "review_sheep_lens": lens,
+    }
+    tags = [
+        *effective.get("tags", []),
+        f"review-sheep-lens:{lens}",
+    ]
+    child = dict(effective)
+    child["metadata"] = metadata
+    child["tags"] = tags
+    child["run_name"] = (
+        f"{effective.get('run_name', 'review-sheep-review')}:lens:{lens}"
+    )
+    return cast(RunnableConfig, child)
 
 
 def ci_review_config(
