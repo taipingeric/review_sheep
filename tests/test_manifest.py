@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 import pytest
-from deepagents.backends import StateBackend
+from deepagents.backends import FilesystemBackend, StateBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents.structured_output import ToolStrategy
+from langchain.tools import ToolRuntime
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool, tool
@@ -105,6 +108,30 @@ class RecordingManifestRunner:
     def run(self, workspace: ReviewWorkspace) -> list[Finding]:
         self.workspaces.append(workspace)
         return []
+
+
+def _assert_filesystem_mutations_denied(backend: Any, permissions: Any) -> None:
+    middleware: Any = FilesystemMiddleware(backend=backend, _permissions=permissions)
+    runtime: Any = ToolRuntime(
+        state={},
+        context=None,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="test-mutation",
+        store=None,
+    )
+    write = next(tool for tool in middleware.tools if tool.name == "write_file")
+    edit = next(tool for tool in middleware.tools if tool.name == "edit_file")
+    delete = next(tool for tool in middleware.tools if tool.name == "delete")
+
+    assert (
+        "permission denied" in write.func("/manifest.json", "changed", runtime).content
+    )
+    assert (
+        "permission denied"
+        in edit.func("/manifest.json", "old", "new", runtime).content
+    )
+    assert "permission denied" in delete.func("/manifest.json", runtime).content
 
 
 def _snapshot() -> PullRequestSnapshot:
@@ -231,7 +258,7 @@ def test_manifest_review_exposes_caller_tools_to_every_lens(
 
 
 def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = FakeSnapshotSource(_snapshot())
     custom_lenses = [
@@ -307,6 +334,9 @@ def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
     assert all(isinstance(call["backend"], StateBackend) for call in factory_calls)
     assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
     assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
+    _assert_filesystem_mutations_denied(
+        FilesystemBackend(root_dir=tmp_path), factory_calls[-1]["permissions"]
+    )
     assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
         *{lens.value for lens in Lens},
         *(lens.identifier for lens in custom_lenses),

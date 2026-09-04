@@ -7,7 +7,9 @@ from typing import Any
 
 import pytest
 from deepagents.backends import FilesystemBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents.structured_output import ToolStrategy
+from langchain.tools import ToolRuntime
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool, tool
@@ -39,6 +41,27 @@ def _checkout(root: Path) -> ReviewCheckout:
         head_sha="head456",
         root=root,
     )
+
+
+def _assert_filesystem_mutations_denied(backend: Any, permissions: Any) -> None:
+    middleware: Any = FilesystemMiddleware(backend=backend, _permissions=permissions)
+    runtime: Any = ToolRuntime(
+        state={},
+        context=None,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="test-mutation",
+        store=None,
+    )
+    write = next(tool for tool in middleware.tools if tool.name == "write_file")
+    edit = next(tool for tool in middleware.tools if tool.name == "edit_file")
+    delete = next(tool for tool in middleware.tools if tool.name == "delete")
+
+    assert "permission denied" in write.func("/review.txt", "changed", runtime).content
+    assert (
+        "permission denied" in edit.func("/review.txt", "old", "new", runtime).content
+    )
+    assert "permission denied" in delete.func("/review.txt", runtime).content
 
 
 class FakeCheckoutSource:
@@ -310,6 +333,9 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
     assert source.calls == [{"repo": "acme/widgets", "number": 42}]
     assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
     assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
+    _assert_filesystem_mutations_denied(
+        factory_calls[-1]["backend"], factory_calls[-1]["permissions"]
+    )
     assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
         *{lens.value for lens in Lens},
         *(lens.identifier for lens in custom_lenses),
