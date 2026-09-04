@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 from deepagents.backends import FilesystemBackend, StateBackend
@@ -11,6 +11,7 @@ from langchain.tools import ToolRuntime
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool, tool
+from langgraph.graph import END, START, StateGraph
 
 from review_sheep import (
     CustomLens,
@@ -132,6 +133,45 @@ def _assert_filesystem_mutations_denied(backend: Any, permissions: Any) -> None:
         in edit.func("/manifest.json", "old", "new", runtime).content
     )
     assert "permission denied" in delete.func("/manifest.json", runtime).content
+
+
+class _StateFiles(TypedDict):
+    files: dict[str, Any]
+
+
+def _assert_state_backend_mutations_denied(permissions: Any) -> None:
+    def exercise(state: _StateFiles) -> dict[str, object]:
+        middleware: Any = FilesystemMiddleware(
+            backend=StateBackend(), _permissions=permissions
+        )
+        runtime: Any = ToolRuntime(
+            state=state,
+            context=None,
+            config=ensure_config(),
+            stream_writer=lambda _: None,
+            tool_call_id="test-state-mutation",
+            store=None,
+        )
+        write = next(tool for tool in middleware.tools if tool.name == "write_file")
+        edit = next(tool for tool in middleware.tools if tool.name == "edit_file")
+        delete = next(tool for tool in middleware.tools if tool.name == "delete")
+
+        assert (
+            "permission denied"
+            in write.func("/manifest.json", "changed", runtime).content
+        )
+        assert (
+            "permission denied"
+            in edit.func("/manifest.json", "old", "new", runtime).content
+        )
+        assert "permission denied" in delete.func("/manifest.json", runtime).content
+        return {}
+
+    graph: Any = StateGraph(_StateFiles)
+    graph.add_node("exercise", exercise)
+    graph.add_edge(START, "exercise")
+    graph.add_edge("exercise", END)
+    graph.compile().invoke({"files": {"/manifest.json": {"content": "original"}}})
 
 
 def _snapshot() -> PullRequestSnapshot:
@@ -337,6 +377,7 @@ def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
     _assert_filesystem_mutations_denied(
         FilesystemBackend(root_dir=tmp_path), factory_calls[-1]["permissions"]
     )
+    _assert_state_backend_mutations_denied(factory_calls[-1]["permissions"])
     assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
         *{lens.value for lens in Lens},
         *(lens.identifier for lens in custom_lenses),
