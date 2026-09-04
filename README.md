@@ -167,6 +167,25 @@ else:
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
 
+`create_deep_review_agent` also accepts an ordered collection of custom Lenses.
+They run concurrently with the built-in Lenses over the same fixed checkout and
+return standard Findings tagged with their custom identifiers:
+
+```python
+from review_sheep import CustomLens, create_deep_review_agent
+
+reviewer = create_deep_review_agent(
+    source=checkout,
+    model=model,
+    custom_lenses=[
+        CustomLens(
+            identifier="api-compatibility",
+            instructions="Review public API changes for compatibility regressions.",
+        )
+    ],
+)
+```
+
 ### Define a custom Lens
 
 Review extensions can describe a caller-owned review perspective with the
@@ -178,6 +197,26 @@ order. Findings can carry either a built-in `Lens` value or a custom identifier;
 built-in Finding serialization remains unchanged. The `instructions` value is
 the custom Lens's caller-owned, concern-specific review guidance; it does not
 change the built-in Lens definitions or the Review's shared snapshot contract.
+
+Pass the ordered definitions to `create_manifest_review_agent` or
+`review_pull_request_tool` to run them alongside the built-in Lenses. All
+Lenses receive the same Manifest snapshot, virtual diff files, and caller-owned
+tools; Findings are returned in built-in order followed by custom declaration
+order:
+
+```python
+custom_lenses = [
+    CustomLens(
+        identifier="api-compatibility",
+        instructions="Review public API changes for compatibility regressions.",
+    )
+]
+reviewer = create_manifest_review_agent(
+    source=source,
+    model=model,
+    custom_lenses=custom_lenses,
+)
+```
 
 ### Add caller-provided Review tools
 

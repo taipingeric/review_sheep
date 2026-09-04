@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from review_sheep import (
     Confidence,
+    CustomLens,
     Finding,
     Lens,
     Location,
@@ -215,6 +216,106 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
         for agent in created_agents
     )
     assert [finding.lens for finding in result.findings] == list(Lens)
+
+
+def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkout = _checkout(tmp_path)
+    source = FakeCheckoutSource(checkout)
+    custom_lenses = [
+        CustomLens(
+            identifier="api-compatibility",
+            instructions="Review public API changes for compatibility regressions.",
+        ),
+        CustomLens(
+            identifier="migration-safety",
+            instructions="Review database migrations for safe rollout behavior.",
+        ),
+    ]
+    factory_calls: list[dict[str, Any]] = []
+    metadata_requests: list[str] = []
+
+    @tool
+    def fetch_db_metadata(table: str) -> str:
+        """Fetch read-only metadata for one database table."""
+        metadata_requests.append(table)
+        return "orders(id, total)"
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        factory_calls.append(kwargs)
+        response_format = kwargs["response_format"]
+        built_in_lenses = {
+            lenses_module.CorrectnessResult: "correctness",
+            lenses_module.SecurityResult: "security",
+            lenses_module.ConventionsAndTestsResult: "conventions-and-tests",
+        }
+        lens = built_in_lenses.get(response_format.schema)
+        if lens is None:
+            lens = next(
+                custom.identifier
+                for custom in custom_lenses
+                if custom.identifier in kwargs["system_prompt"]
+            )
+        return FakeLensAgent(
+            {
+                "description": f"Finding from {lens}.",
+                "location": {"path": "src/example.py"},
+                "severity": "medium",
+                "confidence": "likely",
+                "lens": lens,
+            },
+            caller_tool=fetch_db_metadata,
+        )
+
+    monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_deep_review_agent(
+        source=source,
+        model="openai:gpt-test",
+        custom_lenses=custom_lenses,
+        tools=[fetch_db_metadata],
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert [finding.lens for finding in result.findings] == [
+        *list(Lens),
+        "api-compatibility",
+        "migration-safety",
+    ]
+    assert len(factory_calls) == len(Lens) + len(custom_lenses)
+    assert metadata_requests == ["orders"] * (len(Lens) + len(custom_lenses))
+    assert all(
+        [candidate.name for candidate in call["tools"]]
+        == ["list_changed_files", "get_diff", "fetch_db_metadata"]
+        for call in factory_calls
+    )
+    assert all(
+        custom.instructions in call["system_prompt"]
+        for custom in custom_lenses
+        for call in factory_calls
+        if custom.identifier in call["system_prompt"]
+    )
+    assert all(isinstance(call["backend"], FilesystemBackend) for call in factory_calls)
+
+
+def test_deep_review_rejects_duplicate_custom_lenses_before_checkout(
+    tmp_path: Path,
+) -> None:
+    source = FakeCheckoutSource(_checkout(tmp_path))
+    custom_lens = CustomLens(
+        identifier="api-compatibility",
+        instructions="Review public API changes.",
+    )
+
+    with pytest.raises(ValueError, match="duplicate"):
+        create_deep_review_agent(
+            source=source,
+            model="openai:gpt-test",
+            custom_lenses=[custom_lens, custom_lens],
+        )
+
+    assert source.calls == []
 
 
 def test_deep_review_exposes_caller_tools_to_every_lens(
