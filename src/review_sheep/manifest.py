@@ -9,6 +9,7 @@ from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 from deepagents import create_deep_agent as _create_deep_agent
 from deepagents.backends import StateBackend
 from deepagents.backends.utils import create_file_data
+from deepagents.middleware.filesystem import FilesystemPermission
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
 from langchain_core.runnables import RunnableConfig
@@ -137,6 +138,13 @@ class ManifestReviewRunner:
             model=self._model,
             tools=[*self._tools],
             backend=StateBackend(),
+            permissions=[
+                FilesystemPermission(
+                    operations=["write"],
+                    paths=["/**"],
+                    mode="deny",
+                )
+            ],
             response_format=ToolStrategy(lens_result_schema(lens)),
             system_prompt=(
                 PARALLEL_TOOL_USE_PROMPT + _MANIFEST_PROMPT + lens_system_prompt(lens)

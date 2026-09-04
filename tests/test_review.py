@@ -308,6 +308,8 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
     ]
     assert len(factory_calls) == len(Lens) + len(custom_lenses)
     assert source.calls == [{"repo": "acme/widgets", "number": 42}]
+    assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
+    assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
     assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
         *{lens.value for lens in Lens},
         *(lens.identifier for lens in custom_lenses),

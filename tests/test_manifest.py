@@ -305,6 +305,8 @@ def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
     assert len(factory_calls) == len(Lens) + len(custom_lenses)
     assert tool_requests == ["orders"] * (len(Lens) + len(custom_lenses))
     assert all(isinstance(call["backend"], StateBackend) for call in factory_calls)
+    assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
+    assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
     assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
         *{lens.value for lens in Lens},
         *(lens.identifier for lens in custom_lenses),
