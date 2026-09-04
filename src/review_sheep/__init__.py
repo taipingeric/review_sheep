@@ -15,10 +15,12 @@ from review_sheep.config import ChatConfig, CIConfig, LangfuseConfig, MLflowConf
 from review_sheep.domain import (
     ChatIntent,
     Confidence,
+    CustomLens,
     Finding,
     InquiryAnswer,
     IntentDecision,
     Lens,
+    LensIdentity,
     Location,
     Manifest,
     ManifestFile,
@@ -32,6 +34,7 @@ from review_sheep.domain import (
     ReviewWorkspace,
     Severity,
     SnapshotFile,
+    validate_custom_lenses,
 )
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import (
@@ -66,6 +69,7 @@ __all__ = [
     "ChatIntent",
     "ChatState",
     "Confidence",
+    "CustomLens",
     "DeepAgentReviewRunner",
     "Finding",
     "GitCheckoutSource",
@@ -77,6 +81,7 @@ __all__ = [
     "IntentDecision",
     "LangfuseConfig",
     "Lens",
+    "LensIdentity",
     "Location",
     "MLflowConfig",
     "Manifest",
@@ -110,4 +115,5 @@ __all__ = [
     "git_diff",
     "render_report",
     "review_pull_request_tool",
+    "validate_custom_lenses",
 ]

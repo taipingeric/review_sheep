@@ -110,3 +110,21 @@ Findings: 0
 No Findings.
 """
     )
+
+
+def test_report_renders_custom_lens_identity() -> None:
+    report = render_report(
+        _review(
+            [
+                Finding(
+                    description="The public API changed incompatibly.",
+                    location=Location(path="src/api.py"),
+                    severity=Severity.HIGH,
+                    confidence=Confidence.LIKELY,
+                    lens="api-compatibility",
+                )
+            ]
+        )
+    )
+
+    assert "- Lens: api-compatibility" in report.text

@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+_CUSTOM_LENS_IDENTIFIER_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
+_CUSTOM_LENS_IDENTIFIER_RE = re.compile(_CUSTOM_LENS_IDENTIFIER_PATTERN)
 
 
 class Severity(str, Enum):
@@ -31,6 +37,60 @@ class Lens(str, Enum):
     CORRECTNESS = "correctness"
     SECURITY = "security"
     CONVENTIONS_AND_TESTS = "conventions-and-tests"
+
+
+class CustomLens(BaseModel):
+    """A caller-defined review perspective."""
+
+    model_config = ConfigDict(frozen=True)
+
+    identifier: str = Field(
+        min_length=1,
+        pattern=_CUSTOM_LENS_IDENTIFIER_PATTERN,
+    )
+    instructions: str = Field(min_length=1)
+
+    @field_validator("identifier")
+    @classmethod
+    def reject_built_in_identifier(cls, value: str) -> str:
+        """Keep caller-defined identities distinct from built-in Lenses."""
+        if value in {lens.value for lens in Lens}:
+            raise ValueError("custom Lens identifier cannot use a built-in Lens name")
+        return value
+
+    @field_validator("instructions")
+    @classmethod
+    def reject_blank_instructions(cls, value: str) -> str:
+        """Require useful instructions while preserving intentional formatting."""
+        if not value.strip():
+            raise ValueError("custom Lens instructions must not be blank")
+        return value
+
+
+LensIdentity = Lens | str
+
+
+def _validate_lens_identity(value: object) -> LensIdentity:
+    """Preserve built-in Lens values and validate custom identities."""
+    if isinstance(value, Lens):
+        return value
+    if not isinstance(value, str):
+        return cast(LensIdentity, value)
+    try:
+        return Lens(value)
+    except ValueError:
+        if not _CUSTOM_LENS_IDENTIFIER_RE.fullmatch(value):
+            raise ValueError("custom Lens identity must be lower-kebab-case") from None
+        return value
+
+
+def validate_custom_lenses(lenses: Sequence[CustomLens]) -> tuple[CustomLens, ...]:
+    """Validate and freeze an ordered collection of custom Lenses."""
+    frozen_lenses = tuple(lenses)
+    identifiers = [lens.identifier for lens in frozen_lenses]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("custom Lens identifiers must not be duplicate")
+    return frozen_lenses
 
 
 class ReviewOperation(str, Enum):
@@ -123,7 +183,12 @@ class Finding(BaseModel):
     location: Location
     severity: Severity
     confidence: Confidence
-    lens: Lens
+    lens: LensIdentity
+
+    @field_validator("lens", mode="before")
+    @classmethod
+    def validate_lens_identity(cls, value: object) -> LensIdentity:
+        return _validate_lens_identity(value)
 
 
 class SnapshotFile(BaseModel):

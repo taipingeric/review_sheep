@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from review_sheep.domain import Finding, Location, Report, Review
+from review_sheep.domain import Finding, Lens, Location, Report, Review
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +39,13 @@ def _render_finding(index: int, finding: Finding) -> list[str]:
         "",
         f"- Location: {_render_location(finding.location)}",
         f"- Confidence: {finding.confidence.value}",
-        f"- Lens: {finding.lens.value}",
+        f"- Lens: {_render_lens(finding.lens)}",
         "",
     ]
+
+
+def _render_lens(lens: Lens | str) -> str:
+    return lens.value if isinstance(lens, Lens) else lens
 
 
 def _render_location(location: Location) -> str:

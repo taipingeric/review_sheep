@@ -167,6 +167,18 @@ else:
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
 
+### Define a custom Lens
+
+Review extensions can describe a caller-owned review perspective with the
+public `CustomLens` contract. Each custom Lens has a stable lower-case,
+kebab-case `identifier` and non-blank `instructions`. Identifiers cannot reuse
+the built-in `correctness`, `security`, or `conventions-and-tests` names, and
+`validate_custom_lenses` rejects duplicate identifiers while preserving caller
+order. Findings can carry either a built-in `Lens` value or a custom identifier;
+built-in Finding serialization remains unchanged. The `instructions` value is
+the custom Lens's caller-owned, concern-specific review guidance; it does not
+change the built-in Lens definitions or the Review's shared snapshot contract.
+
 ### Add caller-provided Review tools
 
 Both Review constructors accept optional LangChain tools. Review Sheep gives
