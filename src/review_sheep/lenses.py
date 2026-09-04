@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from contextvars import Context, copy_context
+from contextvars import copy_context
 from functools import cache
 from typing import Any, Literal, overload
 
@@ -160,15 +160,12 @@ def run_lenses_in_parallel(
     lenses: list[ReviewLens] = [*Lens, *validate_custom_lenses(custom_lenses)]
     logger.info("lenses.parallel.start count=%d", len(lenses))
 
-    def run_with_context(context: Context, lens: ReviewLens) -> list[Finding]:
-        return context.run(run_lens, lens)
-
     with ThreadPoolExecutor(
         max_workers=len(lenses),
         thread_name_prefix="review-sheep-lens",
     ) as executor:
         futures: list[Future[list[Finding]]] = [
-            executor.submit(run_with_context, copy_context(), lens) for lens in lenses
+            executor.submit(copy_context().run, run_lens, lens) for lens in lenses
         ]
         findings = [finding for future in futures for finding in future.result()]
     logger.info("lenses.parallel.complete findings=%d", len(findings))

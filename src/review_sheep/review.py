@@ -20,17 +20,20 @@ from langgraph.graph.state import CompiledStateGraph
 
 from review_sheep.checkout import git_changed_files, git_diff
 from review_sheep.domain import (
+    CustomLens,
     Finding,
-    Lens,
     Review,
     ReviewCheckout,
     ReviewError,
     ReviewOperation,
+    validate_custom_lenses,
 )
 from review_sheep.lenses import (
-    LENS_RESULT_SCHEMAS,
-    LENS_SYSTEM_PROMPTS,
     PARALLEL_TOOL_USE_PROMPT,
+    ReviewLens,
+    lens_identifier,
+    lens_result_schema,
+    lens_system_prompt,
     run_lenses_in_parallel,
     validate_lens_findings,
 )
@@ -76,10 +79,12 @@ class DeepAgentReviewRunner:
         model: str | BaseChatModel,
         instructions: str = "",
         tools: Sequence[BaseTool] = (),
+        custom_lenses: Sequence[CustomLens] = (),
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
         self._tools = tuple(tools)
+        self._custom_lenses = validate_custom_lenses(custom_lenses)
 
     def run(
         self,
@@ -97,19 +102,21 @@ class DeepAgentReviewRunner:
         )
         effective_config = ensure_config(config)
         findings = run_lenses_in_parallel(
-            lambda lens: self._run_lens(lens, checkout, config=effective_config)
+            lambda lens: self._run_lens(lens, checkout, config=effective_config),
+            self._custom_lenses,
         )
         logger.info("checkout.review.complete findings=%d", len(findings))
         return findings
 
     def _run_lens(
         self,
-        lens: Lens,
+        lens: ReviewLens,
         checkout: ReviewCheckout,
         *,
         config: RunnableConfig | None = None,
     ) -> list[Finding]:
-        logger.info("checkout.lens.start lens=%s", lens.value)
+        identifier = lens_identifier(lens)
+        logger.info("checkout.lens.start lens=%s", identifier)
         agent = _create_deep_agent(
             model=self._model,
             tools=[*_checkout_tools(checkout), *self._tools],
@@ -121,15 +128,15 @@ class DeepAgentReviewRunner:
                     mode="deny",
                 )
             ],
-            response_format=ToolStrategy(LENS_RESULT_SCHEMAS[lens]),
+            response_format=ToolStrategy(lens_result_schema(lens)),
             system_prompt=(
-                PARALLEL_TOOL_USE_PROMPT + _CHECKOUT_PROMPT + LENS_SYSTEM_PROMPTS[lens]
+                PARALLEL_TOOL_USE_PROMPT + _CHECKOUT_PROMPT + lens_system_prompt(lens)
             ),
         )
         request = (
             f"Review {checkout.repo}#{checkout.pull_request_number} from "
             f"{checkout.base_sha}...{checkout.head_sha} through the "
-            f"{lens.value} Lens."
+            f"{identifier} Lens."
         )
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
@@ -139,12 +146,12 @@ class DeepAgentReviewRunner:
         findings = validate_lens_findings(lens, result["structured_response"])
         logger.info(
             "checkout.lens.complete lens=%s findings=%d",
-            lens.value,
+            identifier,
             len(findings),
         )
         logger.debug(
             "checkout.lens.findings lens=%s data=%s",
-            lens.value,
+            identifier,
             [finding.model_dump(mode="json") for finding in findings],
         )
         return findings
@@ -296,6 +303,7 @@ def create_deep_review_agent(
     model: str | BaseChatModel,
     instructions: str = "",
     tools: Sequence[BaseTool] = (),
+    custom_lenses: Sequence[CustomLens] = (),
 ) -> ReviewAgent:
     """Create the production Review workflow with one deep agent per Lens."""
     return create_review_agent(
@@ -304,5 +312,6 @@ def create_deep_review_agent(
             model=model,
             instructions=instructions,
             tools=tools,
+            custom_lenses=custom_lenses,
         ),
     )
