@@ -18,8 +18,8 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from review_sheep.domain import (
+    CustomLens,
     Finding,
-    Lens,
     Manifest,
     ManifestFile,
     PullRequestSnapshot,
@@ -27,14 +27,17 @@ from review_sheep.domain import (
     ReviewError,
     ReviewOperation,
     ReviewWorkspace,
+    validate_custom_lenses,
 )
 from review_sheep.lenses import (
-    LENS_RESULT_SCHEMAS,
-    LENS_SYSTEM_PROMPTS,
     PARALLEL_TOOL_USE_PROMPT,
     ConventionsAndTestsResult,
     CorrectnessResult,
+    ReviewLens,
     SecurityResult,
+    lens_identifier,
+    lens_result_schema,
+    lens_system_prompt,
     run_lenses_in_parallel,
     validate_lens_findings,
 )
@@ -91,10 +94,12 @@ class ManifestReviewRunner:
         model: str | BaseChatModel,
         instructions: str = "",
         tools: Sequence[BaseTool] = (),
+        custom_lenses: Sequence[CustomLens] = (),
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
         self._tools = tuple(tools)
+        self._custom_lenses = validate_custom_lenses(custom_lenses)
 
     def run(
         self,
@@ -111,32 +116,34 @@ class ManifestReviewRunner:
         )
         effective_config = ensure_config(config)
         findings = run_lenses_in_parallel(
-            lambda lens: self._run_lens(lens, workspace, config=effective_config)
+            lambda lens: self._run_lens(lens, workspace, config=effective_config),
+            self._custom_lenses,
         )
         logger.info("manifest.review.complete findings=%d", len(findings))
         return findings
 
     def _run_lens(
         self,
-        lens: Lens,
+        lens: ReviewLens,
         workspace: ReviewWorkspace,
         *,
         config: RunnableConfig | None = None,
     ) -> list[Finding]:
-        logger.info("manifest.lens.start lens=%s", lens.value)
+        identifier = lens_identifier(lens)
+        logger.info("manifest.lens.start lens=%s", identifier)
         agent = _create_deep_agent(
             model=self._model,
             tools=[*self._tools],
             backend=StateBackend(),
-            response_format=ToolStrategy(LENS_RESULT_SCHEMAS[lens]),
+            response_format=ToolStrategy(lens_result_schema(lens)),
             system_prompt=(
-                PARALLEL_TOOL_USE_PROMPT + _MANIFEST_PROMPT + LENS_SYSTEM_PROMPTS[lens]
+                PARALLEL_TOOL_USE_PROMPT + _MANIFEST_PROMPT + lens_system_prompt(lens)
             ),
         )
         request = (
             f"Review {workspace.manifest.repo}#"
             f"{workspace.manifest.pull_request_number} from the Manifest through "
-            f"the {lens.value} Lens."
+            f"the {identifier} Lens."
         )
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
@@ -155,12 +162,12 @@ class ManifestReviewRunner:
         findings = validate_lens_findings(lens, result["structured_response"])
         logger.info(
             "manifest.lens.complete lens=%s findings=%d",
-            lens.value,
+            identifier,
             len(findings),
         )
         logger.debug(
             "manifest.lens.findings lens=%s data=%s",
-            lens.value,
+            identifier,
             [finding.model_dump(mode="json") for finding in findings],
         )
         return findings
@@ -345,6 +352,7 @@ def create_manifest_review_agent(
     model: str | BaseChatModel,
     instructions: str = "",
     tools: Sequence[BaseTool] = (),
+    custom_lenses: Sequence[CustomLens] = (),
 ) -> ManifestReviewAgent:
     """Create the production Manifest Review workflow used by Chat."""
     return ManifestReviewAgent(
@@ -353,5 +361,6 @@ def create_manifest_review_agent(
             model=model,
             instructions=instructions,
             tools=tools,
+            custom_lenses=custom_lenses,
         ),
     )

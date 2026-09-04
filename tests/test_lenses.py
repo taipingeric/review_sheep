@@ -3,7 +3,14 @@ from __future__ import annotations
 import threading
 from contextvars import ContextVar
 
-from review_sheep import Confidence, Finding, Lens, Location, Severity
+from review_sheep import (
+    Confidence,
+    CustomLens,
+    Finding,
+    Lens,
+    Location,
+    Severity,
+)
 from review_sheep.lenses import run_lenses_in_parallel
 
 
@@ -33,3 +40,37 @@ def test_lenses_run_concurrently_with_context_and_merge_in_stable_order() -> Non
     assert len(worker_threads) == len(Lens)
     assert [finding.lens for finding in findings] == list(Lens)
     assert all(finding.description.endswith(":session-123") for finding in findings)
+
+
+def test_custom_lenses_run_concurrently_after_built_ins_in_declaration_order() -> None:
+    custom_lenses = [
+        CustomLens(identifier="api-compatibility", instructions="Review APIs."),
+        CustomLens(identifier="migration-safety", instructions="Review migrations."),
+    ]
+    barrier = threading.Barrier(len(Lens) + len(custom_lenses), timeout=2)
+    worker_threads: set[int] = set()
+    lock = threading.Lock()
+
+    def run_lens(lens: Lens | CustomLens) -> list[Finding]:
+        with lock:
+            worker_threads.add(threading.get_ident())
+        barrier.wait()
+        identity = lens.value if isinstance(lens, Lens) else lens.identifier
+        return [
+            Finding(
+                description=f"Finding from {identity}.",
+                location=Location(),
+                severity=Severity.LOW,
+                confidence=Confidence.CONFIRMED,
+                lens=identity,
+            )
+        ]
+
+    findings = run_lenses_in_parallel(run_lens, custom_lenses=custom_lenses)
+
+    assert len(worker_threads) == len(Lens) + len(custom_lenses)
+    assert [finding.lens for finding in findings] == [
+        *list(Lens),
+        "api-compatibility",
+        "migration-safety",
+    ]

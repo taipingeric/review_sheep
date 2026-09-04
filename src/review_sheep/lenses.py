@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
+from functools import cache
 from typing import Any, Literal, overload
 
 from pydantic import BaseModel, ConfigDict, create_model
@@ -117,14 +118,18 @@ def lens_result_schema(lens: ReviewLens) -> type[Any]:
     """Build the structured output schema for one built-in or custom Lens."""
     if isinstance(lens, Lens):
         return LENS_RESULT_SCHEMAS[lens]
+    return _custom_lens_result_schema(lens.identifier)
 
+
+@cache
+def _custom_lens_result_schema(identifier: str) -> type[Any]:
     finding_model: Any = create_model(
-        f"{_schema_name(lens.identifier)}Finding",
+        f"{_schema_name(identifier)}Finding",
         __base__=Finding,
-        lens=(Literal[lens.identifier], lens.identifier),
+        lens=(Literal[identifier], identifier),
     )
     return create_model(
-        f"{_schema_name(lens.identifier)}Result",
+        f"{_schema_name(identifier)}Result",
         __config__=ConfigDict(frozen=True),
         findings=(list[finding_model], ...),
     )
@@ -154,6 +159,7 @@ def run_lenses_in_parallel(
     """Run independent Lenses concurrently and flatten in stable order."""
     lenses: list[ReviewLens] = [*Lens, *validate_custom_lenses(custom_lenses)]
     logger.info("lenses.parallel.start count=%d", len(lenses))
+
     with ThreadPoolExecutor(
         max_workers=len(lenses),
         thread_name_prefix="review-sheep-lens",

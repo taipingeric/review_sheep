@@ -11,8 +11,9 @@ The project exposes two capabilities:
 
 1. **Inquiry** answers conversational questions from pull-request metadata.
 2. **Review** inspects either an API-fetched Manifest or a complete local Git
-   checkout pinned to the pull request's head SHA through three independent
-   Review Lenses.
+   checkout pinned to the pull request's head SHA through three built-in
+   Review Lenses. Manifest Review can additionally run caller-defined custom
+   Lenses over the same immutable workspace.
 
 ```mermaid
 flowchart LR
@@ -23,7 +24,7 @@ flowchart LR
     Review[Review LangGraph]
     Manifest[ManifestReviewAgent<br/>GitHub patch snapshot]
     Checkout[GitCheckoutSource<br/>fixed SHA worktree]
-    Lenses[Three deepagents]
+    Lenses[Built-in and custom deepagents]
     GitTools[list_changed_files<br/>get_diff]
     Files[Read-only worktree tools]
     Models[Frozen Pydantic models]
@@ -229,10 +230,12 @@ flowchart TD
     T --> Out
 ```
 
-Both Review adapters start all three Lenses concurrently. Each worker receives
-a copy of the current tracing context, so Langfuse records sibling Lens
-observations under the same turn. Findings are flattened afterward in stable
-`correctness`, `security`, `conventions-and-tests` order. Within a Lens,
+Both Review adapters start all configured Lenses concurrently. Each worker
+receives a copy of the current tracing context, so Langfuse records sibling
+Lens observations under the same turn. Findings are flattened afterward in
+stable built-in order (`correctness`, `security`,
+`conventions-and-tests`), followed by Manifest custom Lenses in caller
+declaration order. Within a Lens,
 independent tool calls are requested in the same assistant message;
 dependent calls remain sequential. The configured gateway must support
 concurrent model requests and parallel tool results.

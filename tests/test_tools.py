@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from langchain_core.tools import BaseTool
 
-from review_sheep import PullRequestSnapshot, SnapshotFile
+from review_sheep import CustomLens, PullRequestSnapshot, SnapshotFile
 from review_sheep import manifest as manifest_module
 from review_sheep.tools import review_pull_request_tool
 
@@ -57,7 +57,9 @@ def _stub_lens_agent(monkeypatch: pytest.MonkeyPatch) -> None:
     }
 
     def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
-        lens_name = schema_to_lens[kwargs["response_format"].schema]
+        lens_name = schema_to_lens.get(
+            kwargs["response_format"].schema, "api-compatibility"
+        )
         return FakeLensAgent(
             {
                 "description": f"Finding from {lens_name}.",
@@ -88,6 +90,27 @@ def test_review_pull_request_tool_returns_the_rendered_report(
 
     assert "# Review Report: acme/widgets#42" in result
     assert "Finding from correctness." in result
+
+
+def test_review_pull_request_tool_passes_custom_lenses_to_manifest_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_lens_agent(monkeypatch)
+    custom_lenses = [
+        CustomLens(
+            identifier="api-compatibility",
+            instructions="Review public API compatibility.",
+        )
+    ]
+    tool = review_pull_request_tool(
+        "openai:gpt-test",
+        FakeSnapshotSource(_snapshot()),
+        custom_lenses=custom_lenses,
+    )
+
+    result = tool.invoke({"repo": "acme/widgets", "number": 42})
+
+    assert "Finding from api-compatibility." in result
 
 
 def test_review_pull_request_tool_returns_errors_as_text_instead_of_raising() -> None:

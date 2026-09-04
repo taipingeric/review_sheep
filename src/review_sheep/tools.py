@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool, tool
 
-from review_sheep.domain import Review
+from review_sheep.domain import CustomLens, Review
 from review_sheep.manifest import SnapshotSource, create_manifest_review_agent
 from review_sheep.report import render_report
 
@@ -23,6 +23,7 @@ def review_pull_request_tool(
     *,
     instructions: str = "",
     tools: Sequence[BaseTool] = (),
+    custom_lenses: Sequence[CustomLens] = (),
 ) -> BaseTool:
     """Build one LangChain tool that runs a full Manifest Review.
 
@@ -37,6 +38,7 @@ def review_pull_request_tool(
         model=model,
         instructions=instructions,
         tools=tools,
+        custom_lenses=custom_lenses,
     )
 
     @tool
