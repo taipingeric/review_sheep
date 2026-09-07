@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import langfuse
 import langfuse.langchain as langfuse_langchain
 import pytest
+from langchain_core.runnables import RunnableConfig
 
 from review_sheep.config import LangfuseConfig, MLflowConfig
 from review_sheep.tracing import (
@@ -13,6 +15,7 @@ from review_sheep.tracing import (
     create_tracing_handlers,
     flush_langfuse,
     langfuse_turn_config,
+    lens_run_config,
     tracing_turn_config,
 )
 
@@ -159,6 +162,31 @@ def test_configured_tracing_backends_share_one_turn_config(
     assert config["metadata"]["review_sheep_session_id"] == "session-123"
     assert config["metadata"]["langfuse_session_id"] == "session-123"
     assert config["metadata"]["review_sheep_turn"] == 7
+
+
+def test_lens_trace_config_preserves_context_and_adds_lens_identity() -> None:
+    handler: Any = object()
+    root_config: RunnableConfig = {
+        "callbacks": [handler],
+        "run_name": "review-sheep-ci-review",
+        "metadata": {"review_sheep_session_id": "ci:acme/widgets#42"},
+        "tags": ["review-sheep", "ci", "review"],
+    }
+
+    config = lens_run_config(config=root_config, lens="api-compatibility")
+
+    assert config["callbacks"] == [handler]
+    assert config["metadata"] == {
+        "review_sheep_session_id": "ci:acme/widgets#42",
+        "review_sheep_lens": "api-compatibility",
+    }
+    assert config["tags"] == [
+        "review-sheep",
+        "ci",
+        "review",
+        "review-sheep-lens:api-compatibility",
+    ]
+    assert config["run_name"] == "review-sheep-ci-review:lens:api-compatibility"
 
 
 def test_tracing_backend_failure_does_not_disable_other_backend(

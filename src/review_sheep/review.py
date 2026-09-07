@@ -30,6 +30,7 @@ from review_sheep.domain import (
 )
 from review_sheep.lenses import (
     PARALLEL_TOOL_USE_PROMPT,
+    LensExecutionError,
     ReviewLens,
     lens_identifier,
     lens_result_schema,
@@ -37,6 +38,7 @@ from review_sheep.lenses import (
     run_lenses_in_parallel,
     validate_lens_findings,
 )
+from review_sheep.tracing import lens_run_config
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +143,9 @@ class DeepAgentReviewRunner:
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
         state = cast(Any, {"messages": [{"role": "user", "content": request}]})
-        with set_config_context(config or ensure_config()) as context:
+        with set_config_context(
+            lens_run_config(config=config, lens=identifier)
+        ) as context:
             result = context.run(agent.invoke, state)
         findings = validate_lens_findings(lens, result["structured_response"])
         logger.info(
@@ -281,12 +285,15 @@ def _create_review_graph(
 def _review_error(
     *, state: _ReviewGraphState, operation: ReviewOperation, error: Exception
 ) -> ReviewError:
+    lens = error.lens if isinstance(error, LensExecutionError) else None
+    cause = error.cause if isinstance(error, LensExecutionError) else error
     return ReviewError(
         repo=state["repo"],
         pull_request_number=state["pull_request_number"],
         operation=operation,
-        error_type=type(error).__name__,
+        error_type=type(cause).__name__,
         message=str(error),
+        lens=lens,
     )
 
 

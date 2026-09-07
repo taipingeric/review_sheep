@@ -28,6 +28,15 @@ PARALLEL_TOOL_USE_PROMPT = (
 ReviewLens = Lens | CustomLens
 
 
+class LensExecutionError(RuntimeError):
+    """Identify the Lens whose independent execution failed."""
+
+    def __init__(self, lens: ReviewLens, cause: Exception) -> None:
+        self.lens = lens_identifier(lens)
+        self.cause = cause
+        super().__init__(f"{self.lens} Lens failed: {cause}")
+
+
 class CorrectnessFinding(Finding):
     """Finding contract fixed to the correctness Lens."""
 
@@ -160,12 +169,21 @@ def run_lenses_in_parallel(
     lenses: list[ReviewLens] = [*Lens, *validate_custom_lenses(custom_lenses)]
     logger.info("lenses.parallel.start count=%d", len(lenses))
 
+    def run_one(lens: ReviewLens) -> list[Finding]:
+        try:
+            return run_lens(lens)
+        except LensExecutionError:
+            raise
+        except Exception as error:
+            logger.exception("lenses.lens.failed lens=%s", lens_identifier(lens))
+            raise LensExecutionError(lens, error) from error
+
     with ThreadPoolExecutor(
         max_workers=len(lenses),
         thread_name_prefix="review-sheep-lens",
     ) as executor:
         futures: list[Future[list[Finding]]] = [
-            executor.submit(copy_context().run, run_lens, lens) for lens in lenses
+            executor.submit(copy_context().run, run_one, lens) for lens in lenses
         ]
         findings = [finding for future in futures for finding in future.result()]
     logger.info("lenses.parallel.complete findings=%d", len(findings))

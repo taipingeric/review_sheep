@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from typing import Any
+from pathlib import Path
+from typing import Any, TypedDict
 
 import pytest
-from deepagents.backends import StateBackend
+from deepagents.backends import FilesystemBackend, StateBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents.structured_output import ToolStrategy
+from langchain.tools import ToolRuntime
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool, tool
+from langgraph.graph import END, START, StateGraph
 
 from review_sheep import (
     CustomLens,
@@ -105,6 +109,69 @@ class RecordingManifestRunner:
     def run(self, workspace: ReviewWorkspace) -> list[Finding]:
         self.workspaces.append(workspace)
         return []
+
+
+def _assert_filesystem_mutations_denied(backend: Any, permissions: Any) -> None:
+    middleware: Any = FilesystemMiddleware(backend=backend, _permissions=permissions)
+    runtime: Any = ToolRuntime(
+        state={},
+        context=None,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="test-mutation",
+        store=None,
+    )
+    write = next(tool for tool in middleware.tools if tool.name == "write_file")
+    edit = next(tool for tool in middleware.tools if tool.name == "edit_file")
+    delete = next(tool for tool in middleware.tools if tool.name == "delete")
+
+    assert (
+        "permission denied" in write.func("/manifest.json", "changed", runtime).content
+    )
+    assert (
+        "permission denied"
+        in edit.func("/manifest.json", "old", "new", runtime).content
+    )
+    assert "permission denied" in delete.func("/manifest.json", runtime).content
+
+
+class _StateFiles(TypedDict):
+    files: dict[str, Any]
+
+
+def _assert_state_backend_mutations_denied(permissions: Any) -> None:
+    def exercise(state: _StateFiles) -> dict[str, object]:
+        middleware: Any = FilesystemMiddleware(
+            backend=StateBackend(), _permissions=permissions
+        )
+        runtime: Any = ToolRuntime(
+            state=state,
+            context=None,
+            config=ensure_config(),
+            stream_writer=lambda _: None,
+            tool_call_id="test-state-mutation",
+            store=None,
+        )
+        write = next(tool for tool in middleware.tools if tool.name == "write_file")
+        edit = next(tool for tool in middleware.tools if tool.name == "edit_file")
+        delete = next(tool for tool in middleware.tools if tool.name == "delete")
+
+        assert (
+            "permission denied"
+            in write.func("/manifest.json", "changed", runtime).content
+        )
+        assert (
+            "permission denied"
+            in edit.func("/manifest.json", "old", "new", runtime).content
+        )
+        assert "permission denied" in delete.func("/manifest.json", runtime).content
+        return {}
+
+    graph: Any = StateGraph(_StateFiles)
+    graph.add_node("exercise", exercise)
+    graph.add_edge(START, "exercise")
+    graph.add_edge("exercise", END)
+    graph.compile().invoke({"files": {"/manifest.json": {"content": "original"}}})
 
 
 def _snapshot() -> PullRequestSnapshot:
@@ -231,7 +298,7 @@ def test_manifest_review_exposes_caller_tools_to_every_lens(
 
 
 def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = FakeSnapshotSource(_snapshot())
     custom_lenses = [
@@ -304,6 +371,17 @@ def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
     ]
     assert len(factory_calls) == len(Lens) + len(custom_lenses)
     assert tool_requests == ["orders"] * (len(Lens) + len(custom_lenses))
+    assert all(isinstance(call["backend"], StateBackend) for call in factory_calls)
+    assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
+    assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
+    _assert_filesystem_mutations_denied(
+        FilesystemBackend(root_dir=tmp_path), factory_calls[-1]["permissions"]
+    )
+    _assert_state_backend_mutations_denied(factory_calls[-1]["permissions"])
+    assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
+        *{lens.value for lens in Lens},
+        *(lens.identifier for lens in custom_lenses),
+    }
     snapshots = [
         {path: data["content"] for path, data in agent.calls[0]["files"].items()}
         for agent in agents
@@ -325,6 +403,45 @@ def test_manifest_review_runs_custom_lenses_on_shared_workspace_with_tools(
         for call in factory_calls
         if any(custom.identifier in call["system_prompt"] for custom in custom_lenses)
     } == {custom.instructions for custom in custom_lenses}
+
+
+def test_manifest_review_reports_failing_custom_lens_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = FakeSnapshotSource(_snapshot())
+    custom_lens = CustomLens(
+        identifier="api-compatibility",
+        instructions="Review public API compatibility.",
+    )
+    built_in_lenses = {
+        manifest_module.CorrectnessResult: "correctness",
+        manifest_module.SecurityResult: "security",
+        manifest_module.ConventionsAndTestsResult: "conventions-and-tests",
+    }
+    agents: list[FakeLensAgent] = []
+
+    class FailingLensAgent:
+        def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("custom gateway unavailable")
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent | FailingLensAgent:
+        schema = kwargs["response_format"].schema
+        if schema not in built_in_lenses:
+            return FailingLensAgent()
+        return _fake_lens_agent(schema, agents)
+
+    monkeypatch.setattr(manifest_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_manifest_review_agent(
+        source=source,
+        model="openai:gpt-test",
+        custom_lenses=[custom_lens],
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, ReviewError)
+    assert result.lens == "api-compatibility"
+    assert result.error_type == "RuntimeError"
+    assert "api-compatibility" in result.message
 
 
 def test_manifest_review_propagates_trace_config_to_every_lens(
@@ -353,7 +470,13 @@ def test_manifest_review_propagates_trace_config_to_every_lens(
         agent.configs[0]["metadata"]["review_sheep_turn"] == "turn-17"
         for agent in agents
     )
-    assert all(agent.configs[0]["tags"] == ["chat"] for agent in agents)
+    assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
+        lens.value for lens in Lens
+    }
+    assert all(agent.configs[0]["tags"][:1] == ["chat"] for agent in agents)
+    assert all(
+        agent.configs[0]["tags"][1].startswith("review-sheep-lens:") for agent in agents
+    )
 
 
 def test_manifest_review_returns_snapshot_failures_as_data() -> None:

@@ -7,7 +7,9 @@ from typing import Any
 
 import pytest
 from deepagents.backends import FilesystemBackend
+from deepagents.middleware.filesystem import FilesystemMiddleware
 from langchain.agents.structured_output import ToolStrategy
+from langchain.tools import ToolRuntime
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 from langchain_core.tools import BaseTool, tool
@@ -39,6 +41,27 @@ def _checkout(root: Path) -> ReviewCheckout:
         head_sha="head456",
         root=root,
     )
+
+
+def _assert_filesystem_mutations_denied(backend: Any, permissions: Any) -> None:
+    middleware: Any = FilesystemMiddleware(backend=backend, _permissions=permissions)
+    runtime: Any = ToolRuntime(
+        state={},
+        context=None,
+        config={},
+        stream_writer=lambda _: None,
+        tool_call_id="test-mutation",
+        store=None,
+    )
+    write = next(tool for tool in middleware.tools if tool.name == "write_file")
+    edit = next(tool for tool in middleware.tools if tool.name == "edit_file")
+    delete = next(tool for tool in middleware.tools if tool.name == "delete")
+
+    assert "permission denied" in write.func("/review.txt", "changed", runtime).content
+    assert (
+        "permission denied" in edit.func("/review.txt", "old", "new", runtime).content
+    )
+    assert "permission denied" in delete.func("/review.txt", runtime).content
 
 
 class FakeCheckoutSource:
@@ -245,6 +268,7 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
         ),
     ]
     factory_calls: list[dict[str, Any]] = []
+    agents: list[FakeLensAgent] = []
     metadata_requests: list[str] = []
     start_barrier = threading.Barrier(len(Lens) + len(custom_lenses), timeout=2)
 
@@ -281,12 +305,14 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
             if lens not in built_in_lenses.values()
             else None
         )
-        return FakeLensAgent(
+        agent = FakeLensAgent(
             finding,
             caller_tool=fetch_db_metadata,
             structured_response=structured_response,
             on_invoke=start_barrier.wait,
         )
+        agents.append(agent)
+        return agent
 
     monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
 
@@ -305,6 +331,20 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
     ]
     assert len(factory_calls) == len(Lens) + len(custom_lenses)
     assert source.calls == [{"repo": "acme/widgets", "number": 42}]
+    assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
+    assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
+    custom_calls = [
+        call
+        for call in factory_calls
+        if any(custom.identifier in call["system_prompt"] for custom in custom_lenses)
+    ]
+    assert len(custom_calls) == len(custom_lenses)
+    for call in custom_calls:
+        _assert_filesystem_mutations_denied(call["backend"], call["permissions"])
+    assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
+        *{lens.value for lens in Lens},
+        *(lens.identifier for lens in custom_lenses),
+    }
     assert metadata_requests == ["orders"] * (len(Lens) + len(custom_lenses))
     assert all(
         [candidate.name for candidate in call["tools"]]
@@ -337,6 +377,54 @@ def test_deep_review_rejects_duplicate_custom_lenses_before_checkout(
         )
 
     assert source.calls == []
+
+
+def test_deep_review_reports_failing_custom_lens_identity(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    source = FakeCheckoutSource(_checkout(tmp_path))
+    custom_lens = CustomLens(
+        identifier="api-compatibility",
+        instructions="Review public API compatibility.",
+    )
+    built_in_lenses = {
+        lenses_module.CorrectnessResult: "correctness",
+        lenses_module.SecurityResult: "security",
+        lenses_module.ConventionsAndTestsResult: "conventions-and-tests",
+    }
+
+    class FailingLensAgent:
+        def invoke(self, state: dict[str, Any]) -> dict[str, Any]:
+            raise RuntimeError("custom gateway unavailable")
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent | FailingLensAgent:
+        schema = kwargs["response_format"].schema
+        if schema not in built_in_lenses:
+            return FailingLensAgent()
+        return FakeLensAgent(
+            {
+                "description": f"Finding from {built_in_lenses[schema]}.",
+                "location": {"path": "src/example.py"},
+                "severity": "medium",
+                "confidence": "likely",
+                "lens": built_in_lenses[schema],
+            }
+        )
+
+    monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_deep_review_agent(
+        source=source,
+        model="openai:gpt-test",
+        custom_lenses=[custom_lens],
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, ReviewError)
+    assert result.lens == "api-compatibility"
+    assert "api-compatibility" in result.message
+    assert "lenses.lens.failed lens=api-compatibility" in caplog.text
 
 
 def test_deep_review_exposes_caller_tools_to_every_lens(
@@ -457,8 +545,15 @@ def test_deep_review_propagates_trace_config_to_every_lens(
         agent.configs[0]["metadata"]["review_sheep_session_id"] == "ci:acme/widgets#42"
         for agent in agents
     )
+    assert {agent.configs[0]["metadata"]["review_sheep_lens"] for agent in agents} == {
+        lens.value for lens in Lens
+    }
     assert all(
-        agent.configs[0]["tags"] == ["review-sheep", "ci", "review"] for agent in agents
+        agent.configs[0]["tags"][:3] == ["review-sheep", "ci", "review"]
+        for agent in agents
+    )
+    assert all(
+        agent.configs[0]["tags"][3].startswith("review-sheep-lens:") for agent in agents
     )
 
 
