@@ -6,6 +6,7 @@ from review_sheep.chat_graph import (
     create_chatbot_graph,
 )
 from review_sheep.checkout import (
+    CachedGitCheckoutSource,
     GitCheckoutSource,
     PullRequestRevisionSource,
     git_changed_files,
@@ -53,6 +54,7 @@ from review_sheep.manifest import (
 from review_sheep.report import render_report
 from review_sheep.review import (
     DeepAgentReviewRunner,
+    DisposableReviewCheckoutSource,
     ReviewAgent,
     ReviewCheckoutSource,
     ReviewRunner,
@@ -65,12 +67,14 @@ __version__ = "0.1.1"
 
 __all__ = [
     "CIConfig",
+    "CachedGitCheckoutSource",
     "ChatConfig",
     "ChatIntent",
     "ChatState",
     "Confidence",
     "CustomLens",
     "DeepAgentReviewRunner",
+    "DisposableReviewCheckoutSource",
     "Finding",
     "GitCheckoutSource",
     "GitHubPullRequestReader",

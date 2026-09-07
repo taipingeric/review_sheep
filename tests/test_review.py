@@ -74,6 +74,15 @@ class FakeCheckoutSource:
         return self.checkout
 
 
+class DisposableFakeCheckoutSource(FakeCheckoutSource):
+    def __init__(self, checkout: ReviewCheckout) -> None:
+        super().__init__(checkout)
+        self.cleaned: list[ReviewCheckout] = []
+
+    def cleanup_checkout(self, checkout: ReviewCheckout) -> None:
+        self.cleaned.append(checkout)
+
+
 class DeterministicReviewRunner:
     def __init__(self) -> None:
         self.checkouts: list[ReviewCheckout] = []
@@ -150,6 +159,34 @@ def test_review_runs_over_one_fixed_checkout(tmp_path: Path) -> None:
     assert len(result.findings) == 1
     assert source.calls == [{"repo": "acme/widgets", "number": 42}]
     assert runner.checkouts == [checkout]
+
+
+def test_review_cleans_a_disposable_checkout_after_success(tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path)
+    source = DisposableFakeCheckoutSource(checkout)
+
+    result = create_review_agent(
+        source=source,
+        runner=DeterministicReviewRunner(),
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert source.cleaned == [checkout]
+
+
+def test_review_cleans_a_disposable_checkout_after_runner_failure(
+    tmp_path: Path,
+) -> None:
+    checkout = _checkout(tmp_path)
+    source = DisposableFakeCheckoutSource(checkout)
+
+    result = create_review_agent(
+        source=source,
+        runner=FailingReviewRunner(),
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, ReviewError)
+    assert source.cleaned == [checkout]
 
 
 @pytest.mark.parametrize(

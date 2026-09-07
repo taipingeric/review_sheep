@@ -57,6 +57,12 @@ class ReviewCheckoutSource(Protocol):
     def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout: ...
 
 
+class DisposableReviewCheckoutSource(ReviewCheckoutSource, Protocol):
+    """A checkout source that owns a disposable checkout lifecycle."""
+
+    def cleanup_checkout(self, checkout: ReviewCheckout) -> None: ...
+
+
 class ReviewRunner(Protocol):
     """Review one fixed checkout through every configured Lens."""
 
@@ -243,9 +249,10 @@ def _create_review_graph(
         return {"checkout": checkout}
 
     def run_review(state: _ReviewGraphState) -> dict[str, object]:
+        checkout = state["checkout"]
         try:
             logger.info("checkout.graph.run_review")
-            findings = runner.run(state["checkout"])
+            findings = runner.run(checkout)
         except Exception as error:
             logger.exception("checkout.graph.run_review.failed")
             return {
@@ -255,7 +262,8 @@ def _create_review_graph(
                     error=error,
                 )
             }
-        checkout = state["checkout"]
+        finally:
+            _cleanup_checkout(source, checkout)
         return {
             "result": Review(
                 repo=checkout.repo,
@@ -280,6 +288,16 @@ def _create_review_graph(
     )
     graph.add_edge("run_review", END)
     return graph.compile()
+
+
+def _cleanup_checkout(source: ReviewCheckoutSource, checkout: ReviewCheckout) -> None:
+    cleanup = getattr(source, "cleanup_checkout", None)
+    if cleanup is None:
+        return
+    try:
+        cleanup(checkout)
+    except Exception:
+        logger.exception("checkout.graph.cleanup.failed")
 
 
 def _review_error(

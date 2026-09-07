@@ -167,6 +167,25 @@ else:
 The lower-level `create_review_agent(source=..., runner=...)` seam accepts
 deterministic collaborators for tests or a caller-owned Review implementation.
 
+For repeated Reviews of the same repository, use `CachedGitCheckoutSource` to
+keep one credential-free bare mirror while creating a fresh disposable worktree
+for every PR revision. Git authentication remains delegated to Git's normal
+credential helper or environment; do not put tokens in `remote_url`.
+
+```python
+from review_sheep import CachedGitCheckoutSource, create_deep_review_agent
+
+checkout = CachedGitCheckoutSource(
+    revisions=github,
+    cache_root="~/.cache/review-sheep/repos",
+)
+reviewer = create_deep_review_agent(source=checkout, model=model)
+result = reviewer.review(repo="acme/widgets", number=42)
+```
+
+The Review graph removes the disposable worktree after both successful and
+failed Reviews; the bare mirror remains available for the next Review.
+
 `create_deep_review_agent` also accepts an ordered collection of custom Lenses.
 They run concurrently with the built-in Lenses over the same fixed checkout and
 return standard Findings tagged with their custom identifiers:

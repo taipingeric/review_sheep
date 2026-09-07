@@ -180,6 +180,15 @@ The checkout must not contain credentials: deepagents path confinement prevents
 leaving the root, but readable files inside the root are intentionally visible
 to the reviewer.
 
+For repeated local or service-driven Reviews, `CachedGitCheckoutSource` is the
+alternative adapter at the same `ReviewCheckoutSource` seam. It keeps one bare
+mirror per repository under `cache_root`, fetches the requested base and head
+SHA for every Review, and creates a new detached worktree for that Review.
+The Review graph calls its optional cleanup seam after success or failure, so
+only the disposable worktree is removed; the mirror remains cached. The mirror
+URL must not contain credentials, and Git's credential helper remains
+responsible for authentication.
+
 ## CI ReviewAgent flow
 
 ```mermaid
