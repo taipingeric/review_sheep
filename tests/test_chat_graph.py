@@ -21,6 +21,8 @@ from review_sheep import (
     PullRequestSnapshot,
     Review,
     ReviewCheckout,
+    ReviewError,
+    ReviewOperation,
     ReviewWorkspace,
     create_chatbot_graph,
     create_inquiry_agent,
@@ -373,6 +375,106 @@ def test_chatbot_graph_routes_identity_questions_to_inquiry_agent() -> None:
     assert result["messages"][-1].content == (
         "I am Review Sheep, an assistant for understanding and reviewing "
         "GitHub pull requests."
+    )
+
+
+def test_chatbot_graph_returns_unknown_intent_as_explainable_response() -> None:
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(responses=[]),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(intent=ChatIntent.UNKNOWN, error="classifier unavailable")
+        ),
+    )
+
+    result = chatbot.invoke({"messages": [HumanMessage(content="Review this")]})
+
+    assert result["messages"][-1].content == (
+        "Intent classification failed: classifier unavailable"
+    )
+
+
+def test_chatbot_graph_explains_when_review_adapter_is_not_configured() -> None:
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(responses=[]),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(
+                intent=ChatIntent.REVIEW,
+                repo="acme/widgets",
+                pull_request_number=42,
+            )
+        ),
+    )
+
+    result = chatbot.invoke({"messages": [HumanMessage(content="Review this")]})
+
+    assert result["messages"][-1].content == (
+        "Changed-code Review is not configured for this chatbot."
+    )
+
+
+def test_chatbot_graph_requests_missing_review_repository() -> None:
+    class ConfiguredReviewer:
+        def review(self, *, repo: str, number: int) -> Review | ReviewError:
+            raise AssertionError(f"review should not run for {repo}#{number}")
+
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(responses=[]),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(intent=ChatIntent.REVIEW, pull_request_number=42)
+        ),
+        reviewer=ConfiguredReviewer(),
+    )
+
+    result = chatbot.invoke({"messages": [HumanMessage(content="Review this")]})
+
+    assert result["messages"][-1].content == (
+        "Which repository should I review? Enter it as owner/name."
+    )
+
+
+def test_chatbot_graph_returns_review_failure_as_structured_chat_state() -> None:
+    failure = ReviewError(
+        repo="acme/widgets",
+        pull_request_number=42,
+        operation=ReviewOperation.RUN_REVIEW,
+        error_type="RuntimeError",
+        message="review runner unavailable",
+    )
+
+    class FailingReviewer:
+        def review(self, *, repo: str, number: int) -> ReviewError:
+            assert (repo, number) == ("acme/widgets", 42)
+            return failure
+
+    chatbot = create_chatbot_graph(
+        agent=create_inquiry_agent(
+            model=ScriptedInquiryModel(responses=[]),
+            github=FakePullRequestReader(),
+        ),
+        classifier=ScriptedIntentClassifier(
+            IntentDecision(
+                intent=ChatIntent.REVIEW,
+                repo="acme/widgets",
+                pull_request_number=42,
+            )
+        ),
+        reviewer=FailingReviewer(),
+    )
+
+    result = chatbot.invoke({"messages": [HumanMessage(content="Review this")]})
+
+    assert result["review"] == failure
+    assert result["messages"][-1].content == (
+        "Review failed during run_review: RuntimeError: review runner unavailable"
     )
 
 
