@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
+import os
 import shutil
 import subprocess
+import tempfile
+import time
 from collections.abc import Callable
+from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, Self, TextIO
 from urllib.parse import urlparse
 from uuid import uuid4
 
 from review_sheep.domain import PullRequestRevision, ReviewCheckout
 
 logger = logging.getLogger(__name__)
+
+
+class RepositoryMirrorLockTimeout(RuntimeError):
+    """A repository mirror lock was not acquired before its configured timeout."""
 
 
 class PullRequestRevisionSource(Protocol):
@@ -58,6 +67,49 @@ class GitCheckoutSource:
         return checkout
 
 
+class _RepositoryMirrorLock:
+    """Coordinate operations that mutate one repository mirror."""
+
+    def __init__(self, path: Path, *, timeout: float, label: str) -> None:
+        self._path = path
+        self._timeout = timeout
+        self._label = label
+        self._handle: TextIO | None = None
+
+    def __enter__(self) -> Self:
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        handle = self._path.open("a+")
+        self._handle = handle
+        deadline = time.monotonic() + self._timeout
+        try:
+            while True:
+                try:
+                    flock(handle.fileno(), LOCK_EX | LOCK_NB)
+                    return self
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise RepositoryMirrorLockTimeout(
+                            "timed out acquiring repository mirror lock for "
+                            f"{self._label} after {self._timeout:.3f}s"
+                        )
+                    time.sleep(min(0.05, remaining))
+        except BaseException:
+            self._handle = None
+            handle.close()
+            raise
+
+    def __exit__(self, *_: object) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is None:
+            return
+        try:
+            flock(handle.fileno(), LOCK_UN)
+        finally:
+            handle.close()
+
+
 class CachedGitCheckoutSource:
     """Prepare isolated fixed-SHA worktrees backed by a persistent Git mirror.
 
@@ -74,7 +126,10 @@ class CachedGitCheckoutSource:
         cache_root: str | Path,
         worktree_root: str | Path | None = None,
         remote_url: Callable[[str], str] | None = None,
+        lock_timeout: float = 30.0,
     ) -> None:
+        if not math.isfinite(lock_timeout) or lock_timeout < 0:
+            raise ValueError("lock_timeout must be a finite non-negative number")
         self._revisions = revisions
         self._cache_root = Path(cache_root).expanduser().resolve()
         self._worktree_root = (
@@ -83,13 +138,12 @@ class CachedGitCheckoutSource:
             else self._cache_root / "worktrees"
         )
         self._remote_url = remote_url or _github_repository_url
+        self._lock_timeout = lock_timeout
         self._active_worktrees: dict[Path, Path] = {}
 
     def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
         """Fetch immutable revisions and create one clean disposable worktree."""
         revision = self._revisions.get_pull_request_revision(repo=repo, number=number)
-        remote = self._remote_url(repo)
-        _reject_embedded_credentials(remote)
         mirror = self._mirror_path(repo)
         logger.info(
             "checkout.cache.prepare.start repo=%s pr=%d mirror=%s",
@@ -97,43 +151,44 @@ class CachedGitCheckoutSource:
             number,
             mirror,
         )
-        mirror_reused = self._ensure_mirror(mirror=mirror, remote=remote)
-        self._fetch_revision(
-            mirror=mirror,
-            revision=revision,
-            number=number,
-        )
-        worktree = self._new_worktree_path(repo)
-        try:
-            _git(
-                mirror.parent,
-                "--git-dir",
-                str(mirror),
-                "worktree",
-                "add",
-                "--detach",
-                str(worktree),
-                revision.head_sha,
-            )
-            checkout = _validate_checkout(
-                root=worktree,
+        with _RepositoryMirrorLock(
+            self._lock_path(repo),
+            timeout=self._lock_timeout,
+            label=repo,
+        ):
+            remote = self._remote_url(repo)
+            _reject_embedded_credentials(remote)
+            mirror_reused = self._ensure_mirror(mirror=mirror, remote=remote)
+            self._fetch_revision(
+                mirror=mirror,
                 revision=revision,
+                number=number,
             )
-        except Exception:
-            if worktree.exists():
+            worktree = self._new_worktree_path(repo)
+            try:
                 _git(
                     mirror.parent,
                     "--git-dir",
                     str(mirror),
                     "worktree",
-                    "remove",
-                    "--force",
+                    "add",
+                    "--detach",
                     str(worktree),
+                    revision.head_sha,
                 )
-                if worktree.exists():
-                    shutil.rmtree(worktree)
-            raise
-        self._active_worktrees[checkout.root] = mirror
+                checkout = _validate_checkout(
+                    root=worktree,
+                    revision=revision,
+                )
+            except BaseException:
+                try:
+                    self._remove_worktree(mirror=mirror, root=worktree)
+                except Exception:
+                    logger.exception(
+                        "checkout.cache.prepare.cleanup_failed root=%s", worktree
+                    )
+                raise
+            self._active_worktrees[checkout.root] = mirror
         logger.info(
             "checkout.cache.prepare.complete repo=%s pr=%d mirror_reused=%s root=%s",
             repo,
@@ -150,18 +205,12 @@ class CachedGitCheckoutSource:
         if mirror is None:
             return
         try:
-            if root.exists():
-                _git(
-                    mirror.parent,
-                    "--git-dir",
-                    str(mirror),
-                    "worktree",
-                    "remove",
-                    "--force",
-                    str(root),
-                )
-            if root.exists():
-                shutil.rmtree(root)
+            with _RepositoryMirrorLock(
+                mirror.with_suffix(".lock"),
+                timeout=self._lock_timeout,
+                label=str(mirror),
+            ):
+                self._remove_worktree(mirror=mirror, root=root)
         except Exception:
             logger.exception("checkout.cache.cleanup.failed root=%s", root)
             raise
@@ -172,6 +221,23 @@ class CachedGitCheckoutSource:
 
     def _mirror_path(self, repo: str) -> Path:
         return self._cache_root / f"{_repository_cache_key(repo)}.git"
+
+    def _lock_path(self, repo: str) -> Path:
+        return self._cache_root / f"{_repository_cache_key(repo)}.lock"
+
+    def _remove_worktree(self, *, mirror: Path, root: Path) -> None:
+        if root.exists():
+            _git(
+                mirror.parent,
+                "--git-dir",
+                str(mirror),
+                "worktree",
+                "remove",
+                "--force",
+                str(root),
+            )
+        if root.exists():
+            shutil.rmtree(root)
 
     def _ensure_mirror(self, *, mirror: Path, remote: str) -> bool:
         mirror.parent.mkdir(parents=True, exist_ok=True)
@@ -194,7 +260,15 @@ class CachedGitCheckoutSource:
             logger.info("checkout.cache.mirror.reused mirror=%s", mirror)
             return True
         logger.info("checkout.cache.mirror.initialize mirror=%s", mirror)
-        _git(mirror.parent, "clone", "--bare", remote, str(mirror))
+        temporary_mirror = Path(
+            tempfile.mkdtemp(prefix=f".{mirror.name}-", dir=mirror.parent)
+        )
+        try:
+            _git(mirror.parent, "clone", "--bare", remote, str(temporary_mirror))
+            os.replace(temporary_mirror, mirror)
+        except BaseException:
+            shutil.rmtree(temporary_mirror, ignore_errors=True)
+            raise
         return False
 
     def _fetch_revision(
@@ -210,6 +284,7 @@ class CachedGitCheckoutSource:
                 "--git-dir",
                 str(mirror),
                 "fetch",
+                "--atomic",
                 "--prune",
                 "origin",
                 revision.base_sha,
@@ -229,6 +304,7 @@ class CachedGitCheckoutSource:
                 "--git-dir",
                 str(mirror),
                 "fetch",
+                "--atomic",
                 "--prune",
                 "origin",
                 f"+refs/pull/{number}/head:refs/remotes/review-sheep/pr-{number}",

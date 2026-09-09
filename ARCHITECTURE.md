@@ -188,6 +188,12 @@ The Review graph calls its optional cleanup seam after success or failure, so
 only the disposable worktree is removed; the mirror remains cached. The mirror
 URL must not contain credentials, and Git's credential helper remains
 responsible for authentication.
+Mirror initialization is cloned into a temporary sibling and atomically
+renamed into place; fetches use Git's atomic update option. A lock file beside
+each mirror coordinates fetch, worktree allocation, and worktree removal.
+Locks are independent per repository and have a 30-second default timeout;
+timeout failures surface as `RepositoryMirrorLockTimeout` and then as the
+structured checkout `ReviewError` at the Review seam.
 
 ## CI ReviewAgent flow
 

@@ -21,6 +21,7 @@ from review_sheep import (
     Finding,
     Lens,
     Location,
+    RepositoryMirrorLockTimeout,
     Review,
     ReviewCheckout,
     ReviewError,
@@ -105,6 +106,13 @@ class FailingCheckoutSource:
         raise RuntimeError("checkout HEAD does not match pull request head")
 
 
+class LockTimeoutCheckoutSource:
+    def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
+        raise RepositoryMirrorLockTimeout(
+            "timed out acquiring repository mirror lock for acme/widgets after 0.050s"
+        )
+
+
 class FailingReviewRunner:
     def run(self, checkout: ReviewCheckout) -> list[Finding]:
         raise TimeoutError("model timed out")
@@ -187,6 +195,23 @@ def test_review_cleans_a_disposable_checkout_after_runner_failure(
 
     assert isinstance(result, ReviewError)
     assert source.cleaned == [checkout]
+
+
+def test_review_reports_mirror_lock_timeout_as_a_prepare_error() -> None:
+    result = create_review_agent(
+        source=LockTimeoutCheckoutSource(),
+        runner=DeterministicReviewRunner(),
+    ).review(repo="acme/widgets", number=42)
+
+    assert result == ReviewError(
+        repo="acme/widgets",
+        pull_request_number=42,
+        operation=ReviewOperation.PREPARE_CHECKOUT,
+        error_type="RepositoryMirrorLockTimeout",
+        message=(
+            "timed out acquiring repository mirror lock for acme/widgets after 0.050s"
+        ),
+    )
 
 
 @pytest.mark.parametrize(
