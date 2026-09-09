@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import gc
 import subprocess
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -20,6 +22,7 @@ from review_sheep import (
     git_changed_files,
     git_diff,
 )
+from review_sheep import checkout as checkout_module
 
 
 class FakeRevisionSource:
@@ -428,3 +431,180 @@ def test_cached_checkout_is_cleaned_by_review_graph_on_success_or_failure(
     assert len(reviewed_roots) == 1
     assert not reviewed_roots[0].exists()
     assert len(list((tmp_path / "cache").glob("*.git"))) == 1
+
+
+def test_cached_checkout_retries_after_failed_mirror_initialization(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    attempts = 0
+
+    def flaky_remote(_: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("remote unavailable")
+        return str(remote)
+
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=flaky_remote,
+    )
+
+    with pytest.raises(RuntimeError, match="remote unavailable"):
+        source.prepare_checkout(repo="acme/widgets", number=42)
+    assert list((tmp_path / "cache").glob("*.git")) == []
+
+    checkout = source.prepare_checkout(repo="acme/widgets", number=42)
+    source.cleanup_checkout(checkout)
+    assert attempts == 2
+
+
+def test_cached_checkout_rebuilds_a_corrupt_mirror_safely(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+    first = source.prepare_checkout(repo="acme/widgets", number=42)
+    source.cleanup_checkout(first)
+    mirror = next((tmp_path / "cache").glob("*.git"))
+    (mirror / "config").unlink()
+    caplog.set_level("WARNING")
+
+    rebuilt = source.prepare_checkout(repo="acme/widgets", number=42)
+
+    assert rebuilt.head_sha == head_sha
+    assert "checkout.cache.mirror.rebuild.start" in caplog.text
+    source.cleanup_checkout(rebuilt)
+
+
+def test_cached_checkout_rebuilds_after_failed_revision_fetch(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    valid_revisions = FakeRevisionSource(_revision(base_sha, head_sha))
+    source = CachedGitCheckoutSource(
+        revisions=valid_revisions,
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+    first = source.prepare_checkout(repo="acme/widgets", number=42)
+    source.cleanup_checkout(first)
+    invalid = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, "0" * len(head_sha))),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+
+    with pytest.raises(RuntimeError):
+        invalid.prepare_checkout(repo="acme/widgets", number=42)
+
+    caplog.set_level("WARNING")
+    recovered = source.prepare_checkout(repo="acme/widgets", number=42)
+    assert recovered.head_sha == head_sha
+    assert "checkout.cache.fetch.recovery" in caplog.text
+    source.cleanup_checkout(recovered)
+
+
+def test_cleanup_stale_skips_active_and_removes_released_worktrees(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        worktree_retention=0,
+        mirror_retention=10**9,
+    )
+    active = source.prepare_checkout(repo="acme/widgets", number=42)
+    cleaner = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        worktree_retention=0,
+        mirror_retention=10**9,
+    )
+
+    result = cleaner.cleanup_stale(now=time.time() + 1)
+
+    assert result.removed_worktrees == 0
+    assert result.skipped_active_worktrees == 1
+    assert active.root.exists()
+    source.cleanup_checkout(active)
+
+    stale = source.prepare_checkout(repo="acme/widgets", number=42)
+    del source
+    gc.collect()
+    result = cleaner.cleanup_stale(now=time.time() + 1)
+
+    assert result.removed_worktrees == 1
+    assert not stale.root.exists()
+
+
+def test_cleanup_stale_removes_old_mirror_after_worktrees_are_gone(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+    checkout = source.prepare_checkout(repo="acme/widgets", number=42)
+    source.cleanup_checkout(checkout)
+    cleaner = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        worktree_retention=0,
+        mirror_retention=0,
+    )
+
+    result = cleaner.cleanup_stale(now=time.time() + 1)
+
+    assert result.removed_mirrors == 1
+    assert list((tmp_path / "cache").glob("*.git")) == []
+
+
+def test_cleanup_stale_releases_lease_after_interrupted_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        worktree_retention=0,
+        mirror_retention=10**9,
+    )
+    checkout = source.prepare_checkout(repo="acme/widgets", number=42)
+    original_git = checkout_module._git
+
+    def interrupted_git(*_: object) -> str:
+        raise KeyboardInterrupt("cleanup interrupted")
+
+    monkeypatch.setattr(checkout_module, "_git", interrupted_git)
+    with pytest.raises(KeyboardInterrupt, match="cleanup interrupted"):
+        source.cleanup_checkout(checkout)
+    monkeypatch.setattr(checkout_module, "_git", original_git)
+
+    cleaner = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        worktree_retention=0,
+        mirror_retention=10**9,
+    )
+    result = cleaner.cleanup_stale(now=time.time() + 1)
+
+    assert result.removed_worktrees == 1
+    assert not checkout.root.exists()
