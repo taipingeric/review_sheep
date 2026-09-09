@@ -244,21 +244,28 @@ tests/test_checkout.py tests/test_entrypoints.py`; to disable it, unset
 
 `create_deep_review_agent` also accepts an ordered collection of custom Lenses.
 They run concurrently with the built-in Lenses over the same fixed checkout and
-return standard Findings tagged with their custom identifiers:
+return standard Findings tagged with their custom identifiers. For example, add
+an API-compatibility Lens to a fixed-checkout Review like this:
 
 ```python
-from review_sheep import CustomLens, create_deep_review_agent
+from review_sheep import CustomLens, Review, create_deep_review_agent
 
+custom_lens = CustomLens(
+    identifier="api-compatibility",
+    instructions=(
+        "Review public API changes for backwards-incompatible behavior. "
+        "Report only actionable compatibility regressions."
+    ),
+)
 reviewer = create_deep_review_agent(
     source=checkout,
     model=model,
-    custom_lenses=[
-        CustomLens(
-            identifier="api-compatibility",
-            instructions="Review public API changes for compatibility regressions.",
-        )
-    ],
+    custom_lenses=[custom_lens],
 )
+result = reviewer.review(repo="acme/widgets", number=42)
+if isinstance(result, Review):
+    for finding in result.findings:
+        print(f"[{finding.lens}] {finding.description}")
 ```
 
 ### Define a custom Lens
