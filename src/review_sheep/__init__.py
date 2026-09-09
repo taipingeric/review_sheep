@@ -9,6 +9,7 @@ from review_sheep.checkout import (
     CachedGitCheckoutSource,
     GitCheckoutSource,
     PullRequestRevisionSource,
+    RepositoryMirrorLockTimeout,
     git_changed_files,
     git_diff,
 )
@@ -98,6 +99,7 @@ __all__ = [
     "PullRequestRevisionSource",
     "PullRequestSnapshot",
     "Report",
+    "RepositoryMirrorLockTimeout",
     "Review",
     "ReviewAgent",
     "ReviewCheckout",

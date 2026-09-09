@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import subprocess
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -10,6 +12,7 @@ from review_sheep import (
     Finding,
     GitCheckoutSource,
     PullRequestRevision,
+    RepositoryMirrorLockTimeout,
     Review,
     ReviewCheckout,
     ReviewError,
@@ -172,6 +175,174 @@ def test_cached_checkout_reuses_one_mirror_and_pins_isolated_worktrees(
 
     assert not first.root.exists()
     assert not second.root.exists()
+
+
+def test_cached_checkout_coordinates_concurrent_same_repository_reviews(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    revisions = FakeRevisionSource(_revision(base_sha, head_sha))
+    sources = [
+        CachedGitCheckoutSource(
+            revisions=revisions,
+            cache_root=tmp_path / "cache",
+            remote_url=lambda _: str(remote),
+        )
+        for _ in range(2)
+    ]
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        checkouts = list(
+            workers.map(
+                lambda source: source.prepare_checkout(repo="acme/widgets", number=42),
+                sources,
+            )
+        )
+
+    assert checkouts[0].root != checkouts[1].root
+    assert all(
+        _git(checkout.root, "rev-parse", "HEAD") == head_sha for checkout in checkouts
+    )
+
+    for source, checkout in zip(sources, checkouts, strict=True):
+        source.cleanup_checkout(checkout)
+
+    assert len(list((tmp_path / "cache").glob("*.git"))) == 1
+
+
+def test_cached_checkout_reports_lock_contention_after_configured_timeout(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def blocked_remote(_: str) -> str:
+        entered.set()
+        if not release.wait(timeout=2):
+            raise RuntimeError("test lock holder was not released")
+        return str(remote)
+
+    revisions = FakeRevisionSource(_revision(base_sha, head_sha))
+    holder = CachedGitCheckoutSource(
+        revisions=revisions,
+        cache_root=tmp_path / "cache",
+        remote_url=blocked_remote,
+    )
+    contender = CachedGitCheckoutSource(
+        revisions=revisions,
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        lock_timeout=0.05,
+    )
+
+    with ThreadPoolExecutor(max_workers=1) as workers:
+        future = workers.submit(
+            holder.prepare_checkout,
+            repo="acme/widgets",
+            number=42,
+        )
+        assert entered.wait(timeout=2)
+        try:
+            with pytest.raises(RepositoryMirrorLockTimeout, match="timed out"):
+                contender.prepare_checkout(repo="acme/widgets", number=42)
+        finally:
+            release.set()
+        checkout = future.result()
+
+    holder.cleanup_checkout(checkout)
+
+
+def test_cached_checkout_releases_lock_after_failure_and_interruption(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    revisions = FakeRevisionSource(_revision(base_sha, head_sha))
+
+    def failing_remote(_: str) -> str:
+        raise RuntimeError("remote unavailable")
+
+    failing = CachedGitCheckoutSource(
+        revisions=revisions,
+        cache_root=tmp_path / "cache",
+        remote_url=failing_remote,
+    )
+    working = CachedGitCheckoutSource(
+        revisions=revisions,
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+
+    with pytest.raises(RuntimeError, match="remote unavailable"):
+        failing.prepare_checkout(repo="acme/widgets", number=42)
+    checkout = working.prepare_checkout(repo="acme/widgets", number=42)
+    working.cleanup_checkout(checkout)
+
+    def interrupted_remote(_: str) -> str:
+        raise KeyboardInterrupt
+
+    interrupted = CachedGitCheckoutSource(
+        revisions=revisions,
+        cache_root=tmp_path / "interrupted-cache",
+        remote_url=interrupted_remote,
+    )
+    after_interruption = CachedGitCheckoutSource(
+        revisions=revisions,
+        cache_root=tmp_path / "interrupted-cache",
+        remote_url=lambda _: str(remote),
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        interrupted.prepare_checkout(repo="acme/widgets", number=42)
+    checkout = after_interruption.prepare_checkout(repo="acme/widgets", number=42)
+    after_interruption.cleanup_checkout(checkout)
+
+
+def test_cached_checkout_uses_independent_locks_for_different_repositories(
+    tmp_path: Path,
+) -> None:
+    first_remote, first_base, first_head = _repository(tmp_path / "first")
+    second_remote, second_base, second_head = _repository(tmp_path / "second")
+    revisions_by_repo = {
+        "acme/widgets": _revision(first_base, first_head),
+        "other/gadgets": PullRequestRevision(
+            repo="other/gadgets",
+            number=42,
+            base_sha=second_base,
+            head_sha=second_head,
+        ),
+    }
+    barrier = threading.Barrier(2)
+
+    class MultiRevisionSource:
+        def get_pull_request_revision(
+            self, *, repo: str, number: int
+        ) -> PullRequestRevision:
+            return revisions_by_repo[repo]
+
+    def remote_url(repo: str) -> str:
+        barrier.wait(timeout=2)
+        return {
+            "acme/widgets": str(first_remote),
+            "other/gadgets": str(second_remote),
+        }[repo]
+
+    source = CachedGitCheckoutSource(
+        revisions=MultiRevisionSource(),
+        cache_root=tmp_path / "cache",
+        remote_url=remote_url,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        futures = [
+            workers.submit(source.prepare_checkout, repo=repo, number=42)
+            for repo in ("acme/widgets", "other/gadgets")
+        ]
+        checkouts = [future.result() for future in futures]
+
+    assert {checkout.head_sha for checkout in checkouts} == {first_head, second_head}
+    for checkout in checkouts:
+        source.cleanup_checkout(checkout)
 
 
 def test_cached_checkout_keeps_different_repositories_in_different_mirrors(

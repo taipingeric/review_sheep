@@ -185,6 +185,10 @@ result = reviewer.review(repo="acme/widgets", number=42)
 
 The Review graph removes the disposable worktree after both successful and
 failed Reviews; the bare mirror remains available for the next Review.
+Mirror mutation is coordinated by a lock per repository, so different
+repositories can proceed independently. `lock_timeout` defaults to 30 seconds;
+contention beyond that raises `RepositoryMirrorLockTimeout` and becomes a
+structured `prepare_checkout` `ReviewError` when used through the Review graph.
 
 `create_deep_review_agent` also accepts an ordered collection of custom Lenses.
 They run concurrently with the built-in Lenses over the same fixed checkout and
