@@ -197,6 +197,24 @@ def test_review_cleans_a_disposable_checkout_after_runner_failure(
     assert source.cleaned == [checkout]
 
 
+def test_review_keeps_the_result_when_cleanup_fails(tmp_path: Path) -> None:
+    checkout = _checkout(tmp_path)
+
+    class FailingCleanupSource(DisposableFakeCheckoutSource):
+        def cleanup_checkout(self, checkout: ReviewCheckout) -> None:
+            self.cleaned.append(checkout)
+            raise OSError("worktree cleanup failed")
+
+    source = FailingCleanupSource(checkout)
+    result = create_review_agent(
+        source=source,
+        runner=DeterministicReviewRunner(),
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert source.cleaned == [checkout]
+
+
 def test_review_reports_mirror_lock_timeout_as_a_prepare_error() -> None:
     result = create_review_agent(
         source=LockTimeoutCheckoutSource(),
@@ -619,13 +637,44 @@ def test_deep_review_propagates_trace_config_to_every_lens(
     )
 
 
-def test_checkout_diff_tool_rejects_parent_traversal(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "path",
+    ["../secret", "../../secret", "/src/../../secret", r"..\secret"],
+)
+def test_checkout_diff_tool_rejects_parent_traversal(path: str, tmp_path: Path) -> None:
     tools = {
         tool.name: tool for tool in review_module._checkout_tools(_checkout(tmp_path))
     }
 
     with pytest.raises(ValueError, match="stay inside"):
-        tools["get_diff"].invoke({"path": "../secret"})
+        tools["get_diff"].invoke({"path": path})
+
+
+def test_checkout_tools_report_empty_results_and_normalize_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    changed_paths: list[str] = []
+
+    def no_changed_files(_: ReviewCheckout) -> str:
+        return ""
+
+    def no_diff(_: ReviewCheckout, *, path: str = "") -> str:
+        changed_paths.append(path)
+        return ""
+
+    monkeypatch.setattr(review_module, "git_changed_files", no_changed_files)
+    monkeypatch.setattr(review_module, "git_diff", no_diff)
+    tools = {
+        tool.name: tool for tool in review_module._checkout_tools(_checkout(tmp_path))
+    }
+
+    assert tools["list_changed_files"].invoke({}) == "No changed files."
+    assert tools["get_diff"].invoke({}) == "No diff for that path."
+    assert (
+        tools["get_diff"].invoke({"path": "  /src\\example.py  "})
+        == "No diff for that path."
+    )
+    assert changed_paths == ["", "src/example.py"]
 
 
 def test_lens_output_schema_rejects_another_lens_identity() -> None:
@@ -672,4 +721,31 @@ def test_review_returns_model_failure_as_explainable_data(tmp_path: Path) -> Non
         operation=ReviewOperation.RUN_REVIEW,
         error_type="TimeoutError",
         message="model timed out",
+    )
+
+
+def test_review_returns_diff_failure_as_explainable_data(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def failing_diff(_: ReviewCheckout, *, path: str = "") -> str:
+        raise RuntimeError(f"diff unavailable for {path or 'all files'}")
+
+    monkeypatch.setattr(review_module, "git_diff", failing_diff)
+
+    class DiffRunner:
+        def run(self, checkout: ReviewCheckout) -> list[Finding]:
+            review_module.git_diff(checkout)
+            return []
+
+    result = create_review_agent(
+        source=FakeCheckoutSource(_checkout(tmp_path)),
+        runner=DiffRunner(),
+    ).review(repo="acme/widgets", number=42)
+
+    assert result == ReviewError(
+        repo="acme/widgets",
+        pull_request_number=42,
+        operation=ReviewOperation.RUN_REVIEW,
+        error_type="RuntimeError",
+        message="diff unavailable for all files",
     )

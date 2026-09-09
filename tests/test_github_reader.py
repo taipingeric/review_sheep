@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from pydantic import BaseModel
 
 from review_sheep import (
@@ -100,6 +101,26 @@ def test_reader_uses_default_repo_and_marks_a_limited_list_as_truncated() -> Non
             }
         ],
     }
+
+
+def test_reader_requires_a_repository_when_no_default_is_configured() -> None:
+    reader = GitHubPullRequestReader(client=object())
+
+    with pytest.raises(RuntimeError, match="no repository given"):
+        reader.list_pull_requests(state="open", limit=1, repo="")
+
+
+def test_reader_propagates_github_api_failures() -> None:
+    class FailingClient:
+        def get_repo(self, repo: str) -> Any:
+            raise RuntimeError(f"GitHub API unavailable for {repo}")
+
+    reader = GitHubPullRequestReader(
+        client=FailingClient(), default_repo="acme/widgets"
+    )
+
+    with pytest.raises(RuntimeError, match="GitHub API unavailable"):
+        reader.get_pull_request_revision(repo="", number=42)
 
 
 def test_reader_returns_stable_pull_request_details() -> None:
@@ -276,3 +297,81 @@ def test_reader_fetches_one_stable_manifest_snapshot() -> None:
             )
         ],
     )
+
+
+def test_reader_rejects_a_snapshot_when_the_pull_request_head_changes() -> None:
+    first_pull = SimpleNamespace(
+        number=42,
+        base=SimpleNamespace(sha="base123"),
+        head=SimpleNamespace(sha="head456"),
+        get_files=list,
+    )
+    second_pull = SimpleNamespace(
+        number=42,
+        base=SimpleNamespace(sha="base123"),
+        head=SimpleNamespace(sha="new-head"),
+    )
+
+    class ChangingRepository(FakeRepository):
+        def __init__(self) -> None:
+            super().__init__([], pull_details=first_pull)
+            self._calls = 0
+
+        def get_pull(self, number: int) -> Any:
+            self._calls += 1
+            assert number == 42
+            return first_pull if self._calls == 1 else second_pull
+
+    reader = GitHubPullRequestReader(
+        client=FakeGithubClient(ChangingRepository()),
+        default_repo="acme/widgets",
+    )
+
+    with pytest.raises(RuntimeError, match="head changed"):
+        reader.fetch_snapshot(repo="", number=42)
+
+
+def test_reader_propagates_snapshot_api_failures() -> None:
+    class FailingPull:
+        number = 42
+        base = SimpleNamespace(sha="base123")
+        head = SimpleNamespace(sha="head456")
+
+        def get_files(self) -> list[Any]:
+            raise RuntimeError("GitHub file listing unavailable")
+
+    repository = FakeRepository([], pull_details=FailingPull())
+    reader = GitHubPullRequestReader(
+        client=FakeGithubClient(repository),
+        default_repo="acme/widgets",
+    )
+
+    with pytest.raises(RuntimeError, match="file listing unavailable"):
+        reader.fetch_snapshot(repo="", number=42)
+
+
+def test_reader_normalizes_missing_patches_to_empty_strings() -> None:
+    changed_file = SimpleNamespace(
+        filename="renamed.py",
+        status="renamed",
+        additions=0,
+        deletions=0,
+        patch=None,
+        previous_filename="example.py",
+    )
+    pull = SimpleNamespace(
+        number=42,
+        base=SimpleNamespace(sha="base123"),
+        head=SimpleNamespace(sha="head456"),
+        get_files=lambda: [changed_file],
+    )
+    repository = FakeRepository([], pull_details=pull)
+    reader = GitHubPullRequestReader(
+        client=FakeGithubClient(repository),
+        default_repo="acme/widgets",
+    )
+
+    snapshot = reader.fetch_snapshot(repo="", number=42)
+
+    assert snapshot.files[0].patch == ""
+    assert snapshot.files[0].previous_path == "example.py"
