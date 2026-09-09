@@ -53,17 +53,22 @@ pip install .
 ## Test coverage
 
 Run the full test suite with per-module and total statement coverage using the
-development dependency set:
+development dependency set. Store the coverage data outside the source tree
+and enforce the same 97% floor used by CI:
 
 ```bash
-uv run --extra dev pytest --cov=src/review_sheep --cov-report=term-missing
+COVERAGE_FILE="${TMPDIR:-/tmp}/review-sheep.coverage" \
+uv run --extra dev --extra openai pytest \
+  --cov=src/review_sheep \
+  --cov-report=term-missing \
+  --cov-fail-under=97
 ```
 
-The command exits non-zero when tests fail and does not require a manual
-coverage-tool installation. Before this coverage check was added, the baseline
-was 104 tests with 94% statement coverage across 1,218 statements, with 78
-statements missed. Coverage is reported for the `review_sheep` source package;
-generated coverage files remain ignored by Git.
+The command exits non-zero when tests fail or total source statement coverage
+falls below 97%; it does not require a manual coverage-tool installation.
+Coverage is reported for the `review_sheep` source package. CI writes the
+coverage data to the runner's temporary directory, so coverage artifacts do not
+leave generated files in the source tree.
 
 ## Inquiry
 
