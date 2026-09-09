@@ -1,0 +1,30 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Install uv and Python
+        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          python-version: "3.12"
+          enable-cache: true
+
+      - name: Run tests with the coverage guardrail
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/review-sheep.coverage
+        run: >-
+          uv run --extra dev --extra openai pytest
+          --cov=src/review_sheep
+          --cov-report=term-missing
+          --cov-fail-under=97

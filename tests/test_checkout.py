@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import shutil
 import subprocess
 import threading
 import time
@@ -144,6 +145,14 @@ def test_checkout_rejects_a_missing_checkout_directory(tmp_path: Path) -> None:
         source.prepare_checkout(repo="acme/widgets", number=42)
 
 
+def test_checkout_validation_reports_a_missing_root(tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="directory does not exist"):
+        checkout_module._validate_checkout(
+            root=tmp_path / "missing",
+            revision=_revision("base", "head"),
+        )
+
+
 def test_checkout_path_must_be_the_worktree_root(tmp_path: Path) -> None:
     root, base_sha, head_sha = _repository(tmp_path)
     nested = root / "src"
@@ -207,6 +216,266 @@ def test_cached_checkout_reuses_one_mirror_and_pins_isolated_worktrees(
 
     assert not first.root.exists()
     assert not second.root.exists()
+
+
+def test_cached_checkout_ignores_cleanup_for_an_unknown_worktree(
+    tmp_path: Path,
+) -> None:
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision("base", "head")),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: "unused",
+    )
+    checkout = ReviewCheckout(
+        repo="acme/widgets",
+        pull_request_number=42,
+        base_sha="base",
+        head_sha="head",
+        root=tmp_path / "unknown-worktree",
+    )
+
+    source.cleanup_checkout(checkout)
+
+    assert not (tmp_path / "cache").exists()
+
+
+@pytest.mark.parametrize("value", [-1.0, float("inf"), float("nan")])
+def test_cached_checkout_rejects_invalid_retention_configuration(
+    value: float, tmp_path: Path
+) -> None:
+    with pytest.raises(ValueError, match="finite non-negative"):
+        CachedGitCheckoutSource(
+            revisions=FakeRevisionSource(_revision("base", "head")),
+            cache_root=tmp_path / "cache",
+            remote_url=lambda _: "unused",
+            worktree_retention=value,
+        )
+
+
+def test_cached_checkout_rejects_an_invalid_repository_name(tmp_path: Path) -> None:
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision("base", "head")),
+        cache_root=tmp_path / "cache",
+    )
+
+    with pytest.raises(RuntimeError, match="owner/name form"):
+        source.prepare_checkout(repo="not-a-repository", number=42)
+
+
+def test_cached_checkout_requires_a_private_cache_root(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir(mode=0o755)
+    cache_root.chmod(0o755)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision("base", "head")),
+        cache_root=cache_root,
+        remote_url=lambda _: "unused",
+    )
+
+    with pytest.raises(RuntimeError, match="permissions 0700"):
+        source.prepare_checkout(repo="acme/widgets", number=42)
+
+
+def test_cached_checkout_requires_a_cache_root_owned_by_the_process(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir(mode=0o700)
+    cache_root.chmod(0o700)
+    actual_owner = cache_root.stat().st_uid
+    monkeypatch.setattr(checkout_module.os, "getuid", lambda: actual_owner + 1)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision("base", "head")),
+        cache_root=cache_root,
+        remote_url=lambda _: "unused",
+    )
+
+    with pytest.raises(RuntimeError, match="owned by the review process"):
+        source.prepare_checkout(repo="acme/widgets", number=42)
+
+
+def test_cached_checkout_can_prune_a_worktree_removed_by_the_caller(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+    checkout = source.prepare_checkout(repo="acme/widgets", number=42)
+    shutil.rmtree(checkout.root)
+
+    source.cleanup_checkout(checkout)
+
+    assert not checkout.root.exists()
+
+
+def test_cached_checkout_rebuilds_a_mirror_file_and_keeps_working(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+    first = source.prepare_checkout(repo="acme/widgets", number=42)
+    source.cleanup_checkout(first)
+    mirror = next((tmp_path / "cache").glob("*.git"))
+    shutil.rmtree(mirror)
+    mirror.write_text("not a bare repository")
+    caplog.set_level("WARNING")
+
+    rebuilt = source.prepare_checkout(repo="acme/widgets", number=42)
+
+    assert rebuilt.head_sha == head_sha
+    assert "quarantine_cleanup_failed" in caplog.text
+    source.cleanup_checkout(rebuilt)
+
+
+def test_cached_checkout_rebuilds_a_mirror_with_invalid_bare_metadata(
+    caplog: pytest.LogCaptureFixture,
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+    first = source.prepare_checkout(repo="acme/widgets", number=42)
+    source.cleanup_checkout(first)
+    mirror = next((tmp_path / "cache").glob("*.git"))
+    shutil.rmtree(mirror)
+    mirror.mkdir()
+    (mirror / "garbage").write_text("not git metadata")
+    caplog.set_level("WARNING")
+
+    rebuilt = source.prepare_checkout(repo="acme/widgets", number=42)
+
+    assert rebuilt.head_sha == head_sha
+    assert "mirror.rebuild.start" in caplog.text
+    source.cleanup_checkout(rebuilt)
+
+
+def test_cached_checkout_builds_the_default_github_repository_url() -> None:
+    assert checkout_module._github_repository_url("acme/widgets") == (
+        "https://github.com/acme/widgets.git"
+    )
+
+
+def test_cached_checkout_cleans_up_a_failed_bare_clone(tmp_path: Path) -> None:
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision("base", "head")),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(tmp_path / "missing-remote"),
+    )
+
+    with pytest.raises(RuntimeError):
+        source.prepare_checkout(repo="acme/widgets", number=42)
+
+    assert list((tmp_path / "cache").glob(".*.git-*")) == []
+
+
+def test_cleanup_stale_keeps_a_recent_worktree(
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        worktree_retention=10**9,
+        mirror_retention=10**9,
+    )
+    checkout = source.prepare_checkout(repo="acme/widgets", number=42)
+    cleaner = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+        worktree_retention=10**9,
+        mirror_retention=10**9,
+    )
+    del source
+    gc.collect()
+
+    result = cleaner.cleanup_stale(now=time.time() + 1)
+
+    assert result.removed_worktrees == 0
+    assert result.errors == ()
+    assert checkout.root.exists()
+
+
+def test_cleanup_stale_reports_a_mirror_listing_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    remote, base_sha, head_sha = _repository(tmp_path)
+    source = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+    checkout = source.prepare_checkout(repo="acme/widgets", number=42)
+    source.cleanup_checkout(checkout)
+    cleaner = CachedGitCheckoutSource(
+        revisions=FakeRevisionSource(_revision(base_sha, head_sha)),
+        cache_root=tmp_path / "cache",
+        remote_url=lambda _: str(remote),
+    )
+
+    def fail_to_list(_: Path) -> list[Path]:
+        raise RuntimeError("worktree metadata unavailable")
+
+    monkeypatch.setattr(cleaner, "_list_worktrees", fail_to_list)
+
+    result = cleaner.cleanup_stale(now=time.time() + 1)
+
+    assert result.errors == (
+        "mirror " + str(next((tmp_path / "cache").glob("*.git"))) + ": RuntimeError",
+    )
+
+
+def test_file_lock_acquisition_returns_none_for_a_missing_parent(
+    tmp_path: Path,
+) -> None:
+    assert (
+        checkout_module._acquire_file_lock(
+            tmp_path / "missing" / "lease", blocking=False
+        )
+        is None
+    )
+
+
+def test_mirror_lock_exit_is_safe_before_entering(tmp_path: Path) -> None:
+    lock = checkout_module._RepositoryMirrorLock(
+        tmp_path / "mirror.lock", timeout=0.1, label="test"
+    )
+
+    lock.__exit__(None, None, None)
+
+
+def test_git_reports_a_missing_executable_as_a_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def missing_git(*_: object, **__: object) -> object:
+        raise FileNotFoundError("git")
+
+    monkeypatch.setattr(checkout_module.subprocess, "run", missing_git)
+    checkout = ReviewCheckout(
+        repo="acme/widgets",
+        pull_request_number=42,
+        base_sha="base",
+        head_sha="head",
+        root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="git executable is not available"):
+        git_diff(checkout)
 
 
 def test_cached_checkout_coordinates_concurrent_same_repository_reviews(

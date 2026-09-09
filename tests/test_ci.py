@@ -492,6 +492,16 @@ def test_repository_ci_calls_the_reusable_review_for_pull_requests() -> None:
     assert "pull-requests: write" in workflow
 
 
+def test_test_workflow_enforces_coverage_without_source_artifacts() -> None:
+    workflow = (Path(__file__).parents[1] / ".github/workflows/test.yml").read_text()
+
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "COVERAGE_FILE: ${{ runner.temp }}/review-sheep.coverage" in workflow
+    assert "--cov=src/review_sheep" in workflow
+    assert "--cov-report=term-missing" in workflow
+    assert "--cov-fail-under=97" in workflow
+
+
 def test_ci_can_select_the_opus_gateway_model(monkeypatch: Any, tmp_path: Path) -> None:
     _configure(monkeypatch)
     selected_models: list[str] = []
