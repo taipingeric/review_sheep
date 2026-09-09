@@ -99,12 +99,25 @@ class _RepositoryMirrorLock:
         handle = self._path.open("a+")
         self._handle = handle
         deadline = time.monotonic() + self._timeout
+        contended = False
         try:
             while True:
                 try:
                     flock(handle.fileno(), LOCK_EX | LOCK_NB)
+                    if contended:
+                        logger.info(
+                            "checkout.cache.lock.acquired_after_contention label=%s",
+                            self._label,
+                        )
                     return self
                 except BlockingIOError:
+                    if not contended:
+                        contended = True
+                        logger.info(
+                            "checkout.cache.lock.contended label=%s timeout=%.3f",
+                            self._label,
+                            self._timeout,
+                        )
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise RepositoryMirrorLockTimeout(
@@ -166,6 +179,7 @@ class CachedGitCheckoutSource:
 
     def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
         """Fetch immutable revisions and create one clean disposable worktree."""
+        self._ensure_cache_root()
         revision = self._revisions.get_pull_request_revision(repo=repo, number=number)
         mirror = self._mirror_path(repo)
         logger.info(
@@ -186,6 +200,12 @@ class CachedGitCheckoutSource:
                 remote=remote,
                 repo=repo,
             )
+            logger.info(
+                "checkout.cache.%s repo=%s mirror=%s",
+                "hit" if mirror_reused else "miss",
+                repo,
+                mirror,
+            )
             try:
                 self._fetch_revision(
                     mirror=mirror,
@@ -194,9 +214,9 @@ class CachedGitCheckoutSource:
                 )
             except RuntimeError as error:
                 logger.warning(
-                    "checkout.cache.fetch.recovery repo=%s error=%s",
+                    "checkout.cache.fetch.recovery repo=%s error_type=%s",
                     repo,
-                    error,
+                    type(error).__name__,
                 )
                 self._rebuild_mirror(
                     mirror=mirror,
@@ -230,14 +250,23 @@ class CachedGitCheckoutSource:
                     root=worktree,
                     revision=revision,
                 )
+                logger.info(
+                    "checkout.cache.worktree.created repo=%s pr=%d root=%s head=%s",
+                    repo,
+                    number,
+                    worktree,
+                    checkout.head_sha,
+                )
             except BaseException:
                 if lease is not None:
                     _release_file_lock(lease)
                 try:
                     self._remove_worktree(mirror=mirror, root=worktree)
-                except Exception:
-                    logger.exception(
-                        "checkout.cache.prepare.cleanup_failed root=%s", worktree
+                except Exception as error:  # noqa: BLE001 - cleanup must not mask checkout error
+                    logger.error(
+                        "checkout.cache.prepare.cleanup_failed root=%s error_type=%s",
+                        worktree,
+                        type(error).__name__,
                     )
                 raise
             self._active_worktrees[checkout.root] = _ActiveWorktree(
@@ -268,8 +297,12 @@ class CachedGitCheckoutSource:
                 label=str(active.mirror),
             ):
                 self._remove_worktree(mirror=active.mirror, root=root)
-        except BaseException:
-            logger.exception("checkout.cache.cleanup.failed root=%s", root)
+        except BaseException as error:
+            logger.error(
+                "checkout.cache.cleanup.failed root=%s error_type=%s",
+                root,
+                type(error).__name__,
+            )
             raise
         finally:
             _release_file_lock(active.lease)
@@ -288,6 +321,7 @@ class CachedGitCheckoutSource:
         worktrees hold a lease lock, so a cleanup pass from another process
         skips them safely.
         """
+        self._ensure_cache_root()
         current_time = time.time() if now is None else now
         removed_worktrees = 0
         removed_mirrors = 0
@@ -329,12 +363,14 @@ class CachedGitCheckoutSource:
                                 "checkout.cache.cleanup.worktree_removed root=%s",
                                 root,
                             )
-                        except Exception as error:
-                            message = f"worktree {root}: {error}"
+                        except Exception as error:  # noqa: BLE001 - report and continue cleanup
+                            message = f"worktree {root}: {type(error).__name__}"
                             errors.append(message)
-                            logger.exception(
-                                "checkout.cache.cleanup.worktree_failed root=%s",
+                            logger.error(
+                                "checkout.cache.cleanup.worktree_failed "
+                                "root=%s error_type=%s",
                                 root,
+                                type(error).__name__,
                             )
                         finally:
                             _release_file_lock(lease)
@@ -355,11 +391,13 @@ class CachedGitCheckoutSource:
                         logger.info(
                             "checkout.cache.cleanup.mirror_removed mirror=%s", mirror
                         )
-            except Exception as error:
-                message = f"mirror {mirror}: {error}"
+            except Exception as error:  # noqa: BLE001 - report and continue cleanup
+                message = f"mirror {mirror}: {type(error).__name__}"
                 errors.append(message)
-                logger.exception(
-                    "checkout.cache.cleanup.mirror_failed mirror=%s", mirror
+                logger.error(
+                    "checkout.cache.cleanup.mirror_failed mirror=%s error_type=%s",
+                    mirror,
+                    type(error).__name__,
                 )
         return RepositoryCacheCleanupResult(
             removed_worktrees=removed_worktrees,
@@ -370,6 +408,18 @@ class CachedGitCheckoutSource:
 
     def _mirror_path(self, repo: str) -> Path:
         return self._cache_root / f"{_repository_cache_key(repo)}.git"
+
+    def _ensure_cache_root(self) -> None:
+        self._cache_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        permissions = self._cache_root.stat().st_mode & 0o777
+        if permissions & 0o077:
+            raise RuntimeError(
+                "repository cache root must be private with permissions 0700"
+            )
+        if hasattr(os, "getuid") and self._cache_root.stat().st_uid != os.getuid():
+            raise RuntimeError(
+                "repository cache root must be owned by the review process"
+            )
 
     def _lock_path(self, repo: str) -> Path:
         return self._cache_root / f"{_repository_cache_key(repo)}.lock"
@@ -426,10 +476,10 @@ class CachedGitCheckoutSource:
                 f"exists for {repo}: {reason}"
             ) from reason
         logger.warning(
-            "checkout.cache.mirror.rebuild.start repo=%s mirror=%s reason=%s",
+            "checkout.cache.mirror.rebuild.start repo=%s mirror=%s reason_type=%s",
             repo,
             mirror,
-            reason,
+            type(reason).__name__,
         )
         temporary_mirror = self._clone_to_temporary(mirror=mirror, remote=remote)
         quarantine = mirror.parent / f".{mirror.name}.corrupt-{uuid4().hex}"
@@ -545,6 +595,11 @@ class CachedGitCheckoutSource:
         revision: PullRequestRevision,
         number: int,
     ) -> None:
+        logger.info(
+            "checkout.cache.mirror.fetch.start repo=%s pr=%d",
+            revision.repo,
+            number,
+        )
         try:
             _git(
                 mirror.parent,
@@ -561,10 +616,10 @@ class CachedGitCheckoutSource:
             # GitHub exposes a pull request head ref even when its commit is not
             # reachable through the repository's ordinary advertised branches.
             logger.warning(
-                "checkout.cache.fetch.shas_failed repo=%s pr=%d error=%s",
+                "checkout.cache.fetch.shas_failed repo=%s pr=%d error_type=%s",
                 revision.repo,
                 number,
-                error,
+                type(error).__name__,
             )
             _git(
                 mirror.parent,
@@ -592,6 +647,11 @@ class CachedGitCheckoutSource:
             "cat-file",
             "-e",
             f"{revision.head_sha}^{{commit}}",
+        )
+        logger.info(
+            "checkout.cache.mirror.fetch.complete repo=%s pr=%d",
+            revision.repo,
+            number,
         )
 
     def _new_worktree_path(self, repo: str) -> Path:

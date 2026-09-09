@@ -29,6 +29,11 @@ def _clear_environment(monkeypatch: Any) -> None:
         "ANTHROPIC_BASE_URL",
         "ANTHROPIC_DEFAULT_SONNET_MODEL",
         "REVIEW_PR_NUMBER",
+        "REVIEW_CACHE_ROOT",
+        "REVIEW_CACHE_LOCK_TIMEOUT",
+        "REVIEW_CACHE_WORKTREE_RETENTION",
+        "REVIEW_CACHE_MIRROR_RETENTION",
+        "REVIEW_CACHE_CLEANUP",
     ):
         monkeypatch.delenv(name, raising=False)
 
@@ -136,3 +141,83 @@ def test_ci_entrypoint_passes_process_environment_to_review_without_dotenv(
     assert config.github_token == "process-token"
     assert config.anthropic_auth_token == "process-auth-token"
     assert config.model == "process-model"
+
+
+def test_ci_entrypoint_passes_cache_controls_to_review(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    _clear_environment(monkeypatch)
+    monkeypatch.setenv("GITHUB_TOKEN", "process-token")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "process-auth-token")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://process.example")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "process-model")
+    captured: dict[str, Any] = {}
+
+    def fake_review(**kwargs: Any) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(review_pr, "run_review", fake_review)
+
+    assert (
+        review_pr.main(
+            [
+                "--repo",
+                "explicit/repository",
+                "--pr-number",
+                "42",
+                "--checkout",
+                str(tmp_path),
+                "--cache-root",
+                str(tmp_path / "cache"),
+                "--cache-lock-timeout",
+                "3.5",
+                "--cache-worktree-retention",
+                "3600",
+                "--cache-mirror-retention",
+                "7200",
+                "--cache-cleanup",
+            ]
+        )
+        == 0
+    )
+    config = captured["config"]
+    assert config.cache_root == str((tmp_path / "cache").resolve())
+    assert config.cache_lock_timeout == 3.5
+    assert config.cache_worktree_retention == 3600
+    assert config.cache_mirror_retention == 7200
+    assert config.cache_cleanup is True
+
+
+def test_ci_entrypoint_can_explicitly_bypass_environment_cache(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    _clear_environment(monkeypatch)
+    monkeypatch.setenv("GITHUB_TOKEN", "process-token")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "process-auth-token")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://process.example")
+    monkeypatch.setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "process-model")
+    monkeypatch.setenv("REVIEW_CACHE_ROOT", str(tmp_path / "environment-cache"))
+    captured: dict[str, Any] = {}
+
+    def fake_review(**kwargs: Any) -> int:
+        captured.update(kwargs)
+        return 0
+
+    monkeypatch.setattr(review_pr, "run_review", fake_review)
+
+    assert (
+        review_pr.main(
+            [
+                "--repo",
+                "explicit/repository",
+                "--pr-number",
+                "42",
+                "--checkout",
+                str(tmp_path),
+                "--no-cache",
+            ]
+        )
+        == 0
+    )
+    assert captured["config"].cache_root is None

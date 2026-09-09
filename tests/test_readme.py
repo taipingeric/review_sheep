@@ -23,6 +23,16 @@ def test_readme_documents_explicit_secret_injection_without_dotenv() -> None:
     assert not (root / ".env.example").exists()
 
 
+def test_readme_documents_runtime_repository_cache_controls() -> None:
+    readme = (Path(__file__).parents[1] / "README.md").read_text()
+
+    assert "REVIEW_CACHE_ROOT" in readme
+    assert "REVIEW_CACHE_CLEANUP" in readme
+    assert "--no-cache" in readme
+    assert "credential helper" in readme
+    assert "cache logs report hits, misses" in readme.lower()
+
+
 def test_project_documents_reproducible_coverage_checks() -> None:
     root = Path(__file__).parents[1]
     readme = (root / "README.md").read_text()

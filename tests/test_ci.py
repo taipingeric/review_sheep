@@ -9,7 +9,9 @@ import pytest
 from langchain_core.runnables import RunnableConfig
 from langchain_core.runnables.config import ensure_config
 
+import review_sheep.ci as ci_module
 from review_sheep import Review, ReviewError, ReviewOperation
+from review_sheep.checkout import RepositoryCacheCleanupResult
 from review_sheep.ci import main
 from review_sheep.config import CIConfig, LangfuseConfig, MLflowConfig
 
@@ -69,6 +71,11 @@ def _ci_config(
     model: str = "gateway-sonnet",
     langfuse: LangfuseConfig | None = None,
     mlflow: MLflowConfig | None = None,
+    cache_root: str | None = None,
+    cache_lock_timeout: float = 30.0,
+    cache_worktree_retention: float = 24 * 60 * 60,
+    cache_mirror_retention: float = 30 * 24 * 60 * 60,
+    cache_cleanup: bool = False,
 ) -> CIConfig:
     return CIConfig(
         repo="acme/widgets",
@@ -83,6 +90,11 @@ def _ci_config(
         custom_headers="X-Team: review-sheep",
         langfuse=langfuse,
         mlflow=mlflow,
+        cache_root=cache_root,
+        cache_lock_timeout=cache_lock_timeout,
+        cache_worktree_retention=cache_worktree_retention,
+        cache_mirror_retention=cache_mirror_retention,
+        cache_cleanup=cache_cleanup,
     )
 
 
@@ -195,6 +207,89 @@ def test_ci_traces_review_with_both_backends_and_flushes_afterward(
         }
     ]
     assert github.closed is True
+
+
+def test_ci_selects_repository_cache_and_runs_configured_cleanup(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    _configure(monkeypatch)
+    github = FakeGithubClient()
+    reviewer = FakeReviewer(_empty_review())
+    source_configs: list[dict[str, Any]] = []
+    cleanup_calls = 0
+
+    class FakeCachedCheckoutSource:
+        def __init__(self, **kwargs: Any) -> None:
+            source_configs.append(kwargs)
+
+        def cleanup_stale(self) -> RepositoryCacheCleanupResult:
+            nonlocal cleanup_calls
+            cleanup_calls += 1
+            return RepositoryCacheCleanupResult(
+                removed_worktrees=2,
+                removed_mirrors=1,
+                skipped_active_worktrees=3,
+            )
+
+    monkeypatch.setattr(ci_module, "CachedGitCheckoutSource", FakeCachedCheckoutSource)
+
+    def reviewer_factory(**kwargs: Any) -> FakeReviewer:
+        assert isinstance(kwargs["source"], FakeCachedCheckoutSource)
+        return reviewer
+
+    exit_code = main(
+        config=_ci_config(
+            checkout=str(tmp_path),
+            cache_root=str(tmp_path / "cache"),
+            cache_lock_timeout=4.5,
+            cache_worktree_retention=120,
+            cache_mirror_retention=240,
+            cache_cleanup=True,
+        ),
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: github,
+        model_factory=lambda **_: "test:model",
+        reviewer_factory=reviewer_factory,
+    )
+
+    assert exit_code == 0
+    assert len(source_configs) == 1
+    assert source_configs[0]["revisions"].__class__.__name__ == (
+        "GitHubPullRequestReader"
+    )
+    assert source_configs[0]["cache_root"] == str((tmp_path / "cache").resolve())
+    assert source_configs[0]["lock_timeout"] == 4.5
+    assert source_configs[0]["worktree_retention"] == 120
+    assert source_configs[0]["mirror_retention"] == 240
+    assert cleanup_calls == 1
+    assert github.closed is True
+
+
+def test_ci_keeps_fixed_checkout_when_cache_is_disabled(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    _configure(monkeypatch)
+    github = FakeGithubClient()
+    reviewer = FakeReviewer(_empty_review())
+    sources: list[Any] = []
+
+    def reviewer_factory(**kwargs: Any) -> FakeReviewer:
+        sources.append(kwargs["source"])
+        return reviewer
+
+    exit_code = main(
+        config=_ci_config(checkout=str(tmp_path)),
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: github,
+        model_factory=lambda **_: "test:model",
+        reviewer_factory=reviewer_factory,
+    )
+
+    assert exit_code == 0
+    assert len(sources) == 1
+    assert type(sources[0]).__name__ == "GitCheckoutSource"
 
 
 def test_ci_tracing_initialization_failure_does_not_change_review_result(

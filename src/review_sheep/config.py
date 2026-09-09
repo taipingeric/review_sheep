@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal, cast
 
 
@@ -111,6 +113,11 @@ class CIConfig:
     review_log_level: str = "INFO"
     langfuse: LangfuseConfig | None = None
     mlflow: MLflowConfig | None = None
+    cache_root: str | None = None
+    cache_lock_timeout: float = 30.0
+    cache_worktree_retention: float = 24 * 60 * 60
+    cache_mirror_retention: float = 30 * 24 * 60 * 60
+    cache_cleanup: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repo", _required(self.repo, "repo"))
@@ -140,6 +147,22 @@ class CIConfig:
             "review_log_level",
             self.review_log_level.strip().upper() or "INFO",
         )
+        object.__setattr__(
+            self,
+            "cache_root",
+            _cache_root(self.cache_root),
+        )
+        _validate_non_negative_finite(self.cache_lock_timeout, "cache_lock_timeout")
+        _validate_non_negative_finite(
+            self.cache_worktree_retention,
+            "cache_worktree_retention",
+        )
+        _validate_non_negative_finite(
+            self.cache_mirror_retention,
+            "cache_mirror_retention",
+        )
+        if not isinstance(self.cache_cleanup, bool):
+            raise TypeError("cache_cleanup must be true or false")
 
     @classmethod
     def from_environment(
@@ -156,6 +179,11 @@ class CIConfig:
         anthropic_auth_token: str | None = None,
         base_url: str | None = None,
         custom_headers: str | None = None,
+        cache_root: str | None = None,
+        cache_lock_timeout: float | None = None,
+        cache_worktree_retention: float | None = None,
+        cache_mirror_retention: float | None = None,
+        cache_cleanup: bool | None = None,
     ) -> CIConfig:
         """Build CI config from environment, with explicit values winning."""
         values = os.environ if environ is None else environ
@@ -231,6 +259,35 @@ class CIConfig:
             review_log_level=values.get("REVIEW_LOG_LEVEL", "INFO"),
             langfuse=LangfuseConfig.from_environment(values),
             mlflow=MLflowConfig.from_environment(values),
+            cache_root=(
+                cache_root
+                if cache_root is not None
+                else values.get("REVIEW_CACHE_ROOT")
+            ),
+            cache_lock_timeout=_environment_float(
+                values,
+                "REVIEW_CACHE_LOCK_TIMEOUT",
+                cache_lock_timeout,
+                30.0,
+            ),
+            cache_worktree_retention=_environment_float(
+                values,
+                "REVIEW_CACHE_WORKTREE_RETENTION",
+                cache_worktree_retention,
+                24 * 60 * 60,
+            ),
+            cache_mirror_retention=_environment_float(
+                values,
+                "REVIEW_CACHE_MIRROR_RETENTION",
+                cache_mirror_retention,
+                30 * 24 * 60 * 60,
+            ),
+            cache_cleanup=_environment_bool(
+                values,
+                "REVIEW_CACHE_CLEANUP",
+                cache_cleanup,
+                False,
+            ),
         )
 
 
@@ -279,3 +336,64 @@ def _environment_required(values: Mapping[str, str], name: str) -> str:
     if not value:
         raise RuntimeError(f"{name} is not configured")
     return value
+
+
+def _cache_root(value: str | None) -> str | None:
+    if value is None or not value.strip():
+        return None
+    root = Path(value).expanduser()
+    if not root.is_absolute():
+        raise ValueError("cache_root must be an absolute dedicated directory")
+    resolved = root.resolve()
+    if resolved in {Path("/"), Path.home()}:
+        raise ValueError("cache_root must be an absolute dedicated directory")
+    if resolved.exists():
+        if not resolved.is_dir():
+            raise ValueError("cache_root must be an absolute dedicated directory")
+        permissions = resolved.stat().st_mode & 0o777
+        if permissions & 0o077:
+            raise ValueError("cache_root must be private with permissions 0700")
+        if hasattr(os, "getuid") and resolved.stat().st_uid != os.getuid():
+            raise ValueError("cache_root must be owned by the review process")
+    return str(resolved)
+
+
+def _validate_non_negative_finite(value: float, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise TypeError(f"{name} must be a finite non-negative number")
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite non-negative number")
+
+
+def _environment_float(
+    values: Mapping[str, str],
+    name: str,
+    explicit: float | None,
+    default: float,
+) -> float:
+    raw = str(explicit) if explicit is not None else values.get(name, str(default))
+    try:
+        parsed = float(raw)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be a finite non-negative number") from error
+    try:
+        _validate_non_negative_finite(parsed, name)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    return parsed
+
+
+def _environment_bool(
+    values: Mapping[str, str],
+    name: str,
+    explicit: bool | None,
+    default: bool,
+) -> bool:
+    if explicit is not None:
+        return explicit
+    raw = values.get(name, str(default)).strip().lower()
+    if raw in {"1", "true", "yes", "on"}:
+        return True
+    if raw in {"0", "false", "no", "off"}:
+        return False
+    raise RuntimeError(f"{name} must be true or false")

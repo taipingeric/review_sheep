@@ -195,6 +195,48 @@ active resources skipped, and actionable cleanup errors; active worktrees hold
 leases and are never removed by that pass. Failed initialization or fetches are
 retried through a safe mirror rebuild.
 
+#### Runtime cache configuration
+
+The CI entrypoint exposes the cache without requiring application code changes.
+The cache is disabled by default, preserving the fixed-checkout behavior. Set
+these environment variables or use the equivalent `scripts/review_pr.py`
+options:
+
+| Environment variable | Default | Meaning |
+| --- | --- | --- |
+| `REVIEW_CACHE_ROOT` | unset | Absolute, dedicated cache directory; unset disables the cache |
+| `REVIEW_CACHE_LOCK_TIMEOUT` | `30` | Seconds to wait for a repository mirror lock |
+| `REVIEW_CACHE_WORKTREE_RETENTION` | `86400` | Seconds before an unused worktree may be cleaned |
+| `REVIEW_CACHE_MIRROR_RETENTION` | `2592000` | Seconds before an unused mirror may be cleaned |
+| `REVIEW_CACHE_CLEANUP` | `false` | Run `cleanup_stale()` after the Review |
+
+For example, a local run can use a private cache and opt into cleanup:
+
+```bash
+mkdir -m 700 -p "$HOME/.cache/review-sheep/repos"
+REVIEW_CACHE_ROOT="$HOME/.cache/review-sheep/repos" \
+REVIEW_CACHE_CLEANUP=true \
+uv run python scripts/review_pr.py --repo acme/widgets --pr-number 42 \
+  --checkout "$PWD/review-target"
+```
+
+The CLI also accepts `--cache-root`, `--cache-lock-timeout`,
+`--cache-worktree-retention`, `--cache-mirror-retention`, and
+`--cache-cleanup`; `--no-cache` explicitly bypasses a cache configured in the
+environment. Cache directories should be dedicated to Review Sheep, owned by
+the review process, and permissioned `0700`. Do not put tokens in the cache
+path or repository URL; configure Git's credential helper or the CI credential
+environment instead. Concurrent Reviews of one repository serialize mirror
+operations while different repositories remain independent.
+
+Cache logs report hits, misses, fetches, lock contention, worktree creation,
+cleanup, and recovery using repository identifiers, cache paths, and counts
+only. They do not log credentials, remote URLs, diffs, or complete repository
+contents. To
+verify the behavior locally, run `uv run pytest tests/test_config.py
+tests/test_checkout.py tests/test_entrypoints.py`; to disable it, unset
+`REVIEW_CACHE_ROOT` or pass `--no-cache`.
+
 `create_deep_review_agent` also accepts an ordered collection of custom Lenses.
 They run concurrently with the built-in Lenses over the same fixed checkout and
 return standard Findings tagged with their custom identifiers:

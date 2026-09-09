@@ -14,4 +14,6 @@ Both adapters implement the same `review(repo, number)` interface and share Lens
 prompts, structured Finding schemas, Report rendering, and LangGraph
 orchestration. The interactive adapter gains zero-setup Review at the cost of
 GitHub patch truncation and missing unchanged files; the CI adapter retains
-complete repository context and fixed-SHA guarantees.
+complete repository context and fixed-SHA guarantees. CI may select the
+`CachedGitCheckoutSource` adapter when runtime cache configuration is enabled;
+the cache preserves the same fixed-SHA and clean-worktree guarantees.

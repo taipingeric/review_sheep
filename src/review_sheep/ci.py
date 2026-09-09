@@ -9,7 +9,7 @@ from typing import Any, TextIO
 
 from langchain_core.runnables.config import ensure_config, set_config_context
 
-from review_sheep.checkout import GitCheckoutSource
+from review_sheep.checkout import CachedGitCheckoutSource, GitCheckoutSource
 from review_sheep.config import CIConfig
 from review_sheep.domain import Review, ReviewError
 from review_sheep.github import GitHubPullRequestReader
@@ -19,7 +19,7 @@ from review_sheep.providers import (
     github_client,
 )
 from review_sheep.report import render_report
-from review_sheep.review import create_deep_review_agent
+from review_sheep.review import ReviewCheckoutSource, create_deep_review_agent
 from review_sheep.runtime_logging import configure_console_logging
 from review_sheep.tracing import (
     ci_review_config,
@@ -98,6 +98,7 @@ def main(
         print(f"error: {_safe_error(github_error, config)}", file=error)
         return 1
 
+    cache_source: CachedGitCheckoutSource | None = None
     try:
         github = GitHubPullRequestReader(client=client)
         try:
@@ -110,7 +111,29 @@ def main(
         except (RuntimeError, ValueError) as config_error:
             print(f"error: {_safe_error(config_error, config)}", file=error)
             return 2
-        checkout = GitCheckoutSource(revisions=github, root=config.checkout)
+        if config.cache_root is None:
+            checkout: ReviewCheckoutSource = GitCheckoutSource(
+                revisions=github,
+                root=config.checkout,
+            )
+            logger.info("ci.cache.disabled")
+        else:
+            cache_source = CachedGitCheckoutSource(
+                revisions=github,
+                cache_root=config.cache_root,
+                lock_timeout=config.cache_lock_timeout,
+                worktree_retention=config.cache_worktree_retention,
+                mirror_retention=config.cache_mirror_retention,
+            )
+            checkout = cache_source
+            logger.info(
+                "ci.cache.enabled cleanup=%s lock_timeout=%.3f "
+                "worktree_retention=%.3f mirror_retention=%.3f",
+                config.cache_cleanup,
+                config.cache_lock_timeout,
+                config.cache_worktree_retention,
+                config.cache_mirror_retention,
+            )
         reviewer = reviewer_factory(
             source=checkout,
             model=model,
@@ -137,6 +160,23 @@ def main(
         print(f"error: {_safe_error(review_error, config)}", file=error)
         return 1
     finally:
+        if cache_source is not None and config.cache_cleanup:
+            try:
+                cleanup = cache_source.cleanup_stale()
+                logger.info(
+                    "ci.cache.cleanup.complete removed_worktrees=%d "
+                    "removed_mirrors=%d skipped_active_worktrees=%d errors=%d",
+                    cleanup.removed_worktrees,
+                    cleanup.removed_mirrors,
+                    cleanup.skipped_active_worktrees,
+                    len(cleanup.errors),
+                )
+                if cleanup.errors:
+                    logger.error(
+                        "ci.cache.cleanup.errors count=%d", len(cleanup.errors)
+                    )
+            except Exception:
+                logger.exception("ci.cache.cleanup.failed")
         try:
             tracing_flush(
                 langfuse_enabled=config.langfuse is not None,
