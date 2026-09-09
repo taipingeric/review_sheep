@@ -494,6 +494,48 @@ def test_manifest_review_returns_snapshot_failures_as_data() -> None:
     )
 
 
+def test_manifest_review_returns_workspace_failures_as_data(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        manifest_module,
+        "_build_workspace",
+        lambda _: (_ for _ in ()).throw(RuntimeError("invalid snapshot workspace")),
+    )
+
+    result = create_manifest_review_agent(
+        source=FakeSnapshotSource(_snapshot()),
+        model="openai:gpt-test",
+    ).review(repo="acme/widgets", number=42)
+
+    assert result == ReviewError(
+        repo="acme/widgets",
+        pull_request_number=42,
+        operation=ReviewOperation.PREPARE_WORKSPACE,
+        error_type="RuntimeError",
+        message="invalid snapshot workspace",
+    )
+
+
+def test_manifest_review_returns_runner_failures_as_data() -> None:
+    class FailingRunner:
+        def run(self, workspace: ReviewWorkspace) -> list[Finding]:
+            raise TimeoutError("manifest model timed out")
+
+    result = ManifestReviewAgent(
+        source=FakeSnapshotSource(_snapshot()),
+        runner=FailingRunner(),
+    ).review(repo="acme/widgets", number=42)
+
+    assert result == ReviewError(
+        repo="acme/widgets",
+        pull_request_number=42,
+        operation=ReviewOperation.RUN_REVIEW,
+        error_type="TimeoutError",
+        message="manifest model timed out",
+    )
+
+
 def test_manifest_is_built_dynamically_for_each_requested_repository() -> None:
     source = DynamicSnapshotSource()
     runner = RecordingManifestRunner()

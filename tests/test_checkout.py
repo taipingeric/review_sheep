@@ -133,6 +133,17 @@ def test_checkout_rejects_a_missing_base_commit(tmp_path: Path) -> None:
         source.prepare_checkout(repo="acme/widgets", number=42)
 
 
+def test_checkout_rejects_a_missing_checkout_directory(tmp_path: Path) -> None:
+    root = tmp_path / "missing-checkout"
+    source = GitCheckoutSource(
+        revisions=FakeRevisionSource(_revision("base", "head")),
+        root=root,
+    )
+
+    with pytest.raises(RuntimeError, match="directory does not exist"):
+        source.prepare_checkout(repo="acme/widgets", number=42)
+
+
 def test_checkout_path_must_be_the_worktree_root(tmp_path: Path) -> None:
     root, base_sha, head_sha = _repository(tmp_path)
     nested = root / "src"
@@ -144,6 +155,20 @@ def test_checkout_path_must_be_the_worktree_root(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="must be the Git worktree root"):
         source.prepare_checkout(repo="acme/widgets", number=42)
+
+
+def test_git_diff_reports_a_git_failure_as_an_exception(tmp_path: Path) -> None:
+    root, _, _ = _repository(tmp_path)
+    checkout = ReviewCheckout(
+        repo="acme/widgets",
+        pull_request_number=42,
+        base_sha="0" * 40,
+        head_sha="1" * 40,
+        root=root,
+    )
+
+    with pytest.raises(RuntimeError, match="git command failed|fatal"):
+        git_diff(checkout)
 
 
 def test_cached_checkout_reuses_one_mirror_and_pins_isolated_worktrees(
