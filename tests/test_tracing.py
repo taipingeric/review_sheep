@@ -14,6 +14,7 @@ from review_sheep.tracing import (
     create_mlflow_handler,
     create_tracing_handlers,
     flush_langfuse,
+    flush_tracing,
     langfuse_turn_config,
     lens_run_config,
     tracing_turn_config,
@@ -99,6 +100,48 @@ def test_langfuse_flush_does_not_log_sdk_error(
 
     assert secret not in caplog.text
     assert "tracing.langfuse.flush_failed" in caplog.text
+
+
+def test_langfuse_flush_reports_success(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeClient:
+        flushed = False
+
+        def flush(self) -> None:
+            self.flushed = True
+
+    client = FakeClient()
+    monkeypatch.setattr(langfuse, "get_client", lambda **_: client)
+    caplog.set_level(logging.INFO)
+
+    flush_langfuse(enabled=True, public_key="pk-lf-test")
+
+    assert client.flushed is True
+    assert "tracing.langfuse.flushed" in caplog.text
+
+
+def test_langfuse_turn_config_is_absent_without_a_handler() -> None:
+    assert langfuse_turn_config(handler=None, session_id="session-123", turn=1) is None
+
+
+def test_mlflow_flush_failure_is_logged_without_escaping(
+    caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    mlflow = pytest.importorskip("mlflow")
+
+    def unavailable_flush() -> None:
+        raise RuntimeError("MLflow unavailable")
+
+    monkeypatch.setattr(mlflow, "flush_trace_async_logging", unavailable_flush)
+    caplog.set_level(logging.ERROR)
+
+    flush_tracing(
+        langfuse_enabled=False,
+        mlflow_enabled=True,
+    )
+
+    assert "tracing.mlflow.flush_failed" in caplog.text
 
 
 def test_langfuse_turn_config_groups_turns_into_one_session() -> None:

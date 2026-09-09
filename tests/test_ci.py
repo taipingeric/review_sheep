@@ -152,6 +152,76 @@ No Findings.
     assert github.closed is True
 
 
+def test_ci_configures_console_logging_when_error_stream_is_omitted(
+    monkeypatch: Any, tmp_path: Path
+) -> None:
+    logging_configs: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        ci_module,
+        "configure_console_logging",
+        lambda **kwargs: logging_configs.append(kwargs),
+    )
+
+    exit_code = main(
+        config=_ci_config(checkout=str(tmp_path)),
+        output=StringIO(),
+        github_factory=lambda _: FakeGithubClient(),
+        model_factory=lambda **_: "test:model",
+        reviewer_factory=lambda **_: FakeReviewer(_empty_review()),
+        tracing_flush=lambda **_: None,
+    )
+
+    assert exit_code == 0
+    assert len(logging_configs) == 1
+    assert logging_configs[0]["level"] == "INFO"
+
+
+def test_ci_reports_model_configuration_failure_and_closes_client(
+    tmp_path: Path,
+) -> None:
+    github = FakeGithubClient()
+    errors = StringIO()
+
+    def unavailable_model(**_: Any) -> str:
+        raise ValueError("model configuration is invalid")
+
+    exit_code = main(
+        config=_ci_config(checkout=str(tmp_path)),
+        output=StringIO(),
+        error=errors,
+        github_factory=lambda _: github,
+        model_factory=unavailable_model,
+        reviewer_factory=lambda **_: FakeReviewer(_empty_review()),
+    )
+
+    assert exit_code == 2
+    assert errors.getvalue() == ("error: ValueError: model configuration is invalid\n")
+    assert github.closed is True
+
+
+def test_ci_reports_reviewer_startup_failure_and_closes_client(
+    tmp_path: Path,
+) -> None:
+    github = FakeGithubClient()
+    errors = StringIO()
+
+    def unavailable_reviewer(**_: Any) -> Any:
+        raise RuntimeError("reviewer unavailable")
+
+    exit_code = main(
+        config=_ci_config(checkout=str(tmp_path)),
+        output=StringIO(),
+        error=errors,
+        github_factory=lambda _: github,
+        model_factory=lambda **_: "test:model",
+        reviewer_factory=unavailable_reviewer,
+    )
+
+    assert exit_code == 1
+    assert errors.getvalue() == "error: RuntimeError: reviewer unavailable\n"
+    assert github.closed is True
+
+
 def test_ci_traces_review_with_both_backends_and_flushes_afterward(
     monkeypatch: Any, tmp_path: Path
 ) -> None:
@@ -501,13 +571,17 @@ def test_ci_redacts_credentials_from_logs_and_error_output(
         anthropic_auth_token="anthropic-secret-injected",
         base_url="https://gateway.example.com",
         custom_headers="X-Secret: custom-header-secret",
+        langfuse=LangfuseConfig(
+            public_key="langfuse-public",
+            secret_key="langfuse-secret-injected",
+        ),
     )
     errors = StringIO()
 
     def unavailable_github(token: str) -> Any:
         raise RuntimeError(
             f"token={token} auth={config.anthropic_auth_token} "
-            "header=custom-header-secret"
+            "header=custom-header-secret langfuse=langfuse-secret-injected"
         )
 
     exit_code = main(
@@ -521,7 +595,9 @@ def test_ci_redacts_credentials_from_logs_and_error_output(
     assert "github-secret-injected" not in errors.getvalue()
     assert "anthropic-secret-injected" not in errors.getvalue()
     assert "custom-header-secret" not in errors.getvalue()
+    assert "langfuse-secret-injected" not in errors.getvalue()
     assert "github-secret-injected" not in caplog.text
     assert "anthropic-secret-injected" not in caplog.text
     assert "custom-header-secret" not in caplog.text
+    assert "langfuse-secret-injected" not in caplog.text
     assert "[redacted]" in errors.getvalue()

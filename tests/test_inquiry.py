@@ -5,7 +5,7 @@ from typing import Any
 import pytest
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, ValidationError
 
@@ -273,6 +273,41 @@ def test_inquiry_returns_an_empty_question_as_stable_error_data() -> None:
 
     assert answer == InquiryAnswer(error="Inquiry question must not be empty")
     assert model.seen_messages == []
+
+
+def test_inquiry_returns_empty_message_sequence_as_stable_error_data() -> None:
+    answer = InquiryAgent(agent=object()).invoke([])
+
+    assert answer == InquiryAnswer(error="Inquiry messages must not be empty")
+
+
+def test_inquiry_returns_no_answer_when_agent_does_not_produce_ai_message() -> None:
+    class HumanOnlyAgent:
+        def invoke(self, _: dict[str, Any]) -> dict[str, Any]:
+            return {"messages": [HumanMessage(content="still thinking")]}
+
+    answer = InquiryAgent(agent=HumanOnlyAgent()).invoke(
+        [HumanMessage(content="What is happening?")]
+    )
+
+    assert answer == InquiryAnswer(error="Inquiry produced no answer")
+
+
+def test_inquiry_ignores_malformed_tool_data_when_answer_is_available() -> None:
+    class MalformedToolDataAgent:
+        def invoke(self, _: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "messages": [
+                    ToolMessage(content="not-json", tool_call_id="call-1"),
+                    AIMessage(content="The metadata is available."),
+                ]
+            }
+
+    answer = InquiryAgent(agent=MalformedToolDataAgent()).invoke(
+        [HumanMessage(content="Summarize the metadata.")]
+    )
+
+    assert answer == InquiryAnswer(text="The metadata is available.")
 
 
 def test_inquiry_contains_missing_repository_configuration_as_tool_data() -> None:

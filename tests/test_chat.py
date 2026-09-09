@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
+import review_sheep.chat as chat_module
 from review_sheep.chat import main
 from review_sheep.config import ChatConfig, LangfuseConfig, MLflowConfig
 from review_sheep.tracing import flush_tracing
@@ -77,6 +78,24 @@ class DeterministicInquiryModel(BaseChatModel):
                 )
             ]
         )
+
+
+class FailingChatModel(BaseChatModel):
+    @property
+    def _llm_type(self) -> str:
+        return "failing-chat-model"
+
+    def bind_tools(self, tools: Any, **kwargs: Any) -> FailingChatModel:
+        return self
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        raise RuntimeError("classifier unavailable")
 
 
 def _chat_config(
@@ -149,6 +168,30 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation() -> None:
     assert "checkout" not in reviewer_configs[0]
 
 
+def test_chat_configures_console_logging_when_error_stream_is_omitted(
+    monkeypatch: Any,
+) -> None:
+    logging_configs: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        chat_module,
+        "configure_console_logging",
+        lambda **kwargs: logging_configs.append(kwargs),
+    )
+
+    exit_code = main(
+        config=_chat_config(),
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        github_factory=lambda _: FakeGithubClient(),
+        model_factory=lambda **_: DeterministicInquiryModel(),
+        tracing_flush=lambda **_: None,
+    )
+
+    assert exit_code == 0
+    assert len(logging_configs) == 1
+    assert logging_configs[0]["level"] == "INFO"
+
+
 def test_chat_treats_a_whitespace_base_url_as_unset() -> None:
     base_urls: list[str | None] = []
 
@@ -199,6 +242,29 @@ def test_chat_routes_each_question_through_inquiry_agent_and_langgraph() -> None
     )
     assert errors.getvalue() == ""
     assert github.closed is True
+
+
+def test_chat_surfaces_intent_failure_as_error_data_at_entrypoint() -> None:
+    prompts = iter(["Review changed code in acme/widgets#42", "quit"])
+    output = StringIO()
+    errors = StringIO()
+
+    exit_code = main(
+        config=_chat_config(),
+        input_fn=lambda _: next(prompts),
+        output=output,
+        error=errors,
+        github_factory=lambda _: FakeGithubClient(),
+        model_factory=lambda **_: FailingChatModel(),
+        tracing_flush=lambda **_: None,
+    )
+
+    assert exit_code == 0
+    assert (
+        "Bot: Intent classification failed: RuntimeError: classifier unavailable"
+        in (output.getvalue())
+    )
+    assert errors.getvalue() == ""
 
 
 class RecordingTraceHandler(BaseCallbackHandler):
@@ -315,6 +381,114 @@ def test_chat_redacts_credentials_from_error_output() -> None:
     assert "github-secret-injected" not in errors.getvalue()
     assert "model-secret-injected" not in errors.getvalue()
     assert "[redacted]" in errors.getvalue()
+
+
+def test_chat_redacts_langfuse_secret_from_startup_failure() -> None:
+    secret = "langfuse-secret-injected"
+    config = ChatConfig(
+        github_token="github-secret-injected",
+        model="gpt-test",
+        api_key="model-secret-injected",
+        langfuse=LangfuseConfig(public_key="pk-test", secret_key=secret),
+    )
+    errors = StringIO()
+
+    def unavailable_github(_: str) -> Any:
+        raise RuntimeError(f"langfuse={secret}")
+
+    exit_code = main(
+        config=config,
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        error=errors,
+        github_factory=unavailable_github,
+    )
+
+    assert exit_code == 1
+    assert secret not in errors.getvalue()
+    assert "[redacted]" in errors.getvalue()
+
+
+def test_chat_returns_configuration_failure_and_flushes_tracing() -> None:
+    github = FakeGithubClient()
+    flush_calls: list[dict[str, Any]] = []
+
+    def unavailable_model(**_: Any) -> DeterministicInquiryModel:
+        raise RuntimeError("model gateway unavailable")
+
+    exit_code = main(
+        config=_chat_config(),
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        error=StringIO(),
+        github_factory=lambda _: github,
+        model_factory=unavailable_model,
+        tracing_flush=lambda **kwargs: flush_calls.append(kwargs),
+    )
+
+    assert exit_code == 2
+    assert github.closed is True
+    assert flush_calls == [
+        {
+            "langfuse_enabled": False,
+            "langfuse_public_key": None,
+            "mlflow_enabled": False,
+        }
+    ]
+
+
+def test_chat_keeps_running_after_a_turn_failure(monkeypatch: Any) -> None:
+    class FailingChatbot:
+        calls = 0
+
+        def invoke(self, state: Any, **_: Any) -> dict[str, Any]:
+            self.calls += 1
+            if self.calls == 1:
+                return {"messages": [AIMessage(content="ready")]}
+            raise RuntimeError("turn failed")
+
+    chatbot = FailingChatbot()
+    monkeypatch.setattr(chat_module, "create_chatbot_graph", lambda **_: chatbot)
+    prompts = iter(["   ", "ask something", "quit"])
+    errors = StringIO()
+
+    exit_code = main(
+        config=_chat_config(),
+        input_fn=lambda _: next(prompts),
+        output=StringIO(),
+        error=errors,
+        github_factory=lambda _: FakeGithubClient(),
+        model_factory=lambda **_: DeterministicInquiryModel(),
+    )
+
+    assert exit_code == 0
+    assert chatbot.calls == 2
+    assert errors.getvalue() == "error: RuntimeError: turn failed\n"
+
+
+def test_chat_reports_graph_startup_failure_and_closes_client(
+    monkeypatch: Any,
+) -> None:
+    github = FakeGithubClient()
+    monkeypatch.setattr(
+        chat_module,
+        "create_chatbot_graph",
+        lambda **_: (_ for _ in ()).throw(RuntimeError("graph unavailable")),
+    )
+    errors = StringIO()
+
+    exit_code = main(
+        config=_chat_config(),
+        input_fn=lambda _: "quit",
+        output=StringIO(),
+        error=errors,
+        github_factory=lambda _: github,
+        model_factory=lambda **_: DeterministicInquiryModel(),
+    )
+
+    assert exit_code == 1
+    assert github.closed is True
+    assert errors.getvalue() == "error: RuntimeError: graph unavailable\n"
 
 
 def test_chat_records_an_inquiry_turn_in_mlflow(tmp_path: Any) -> None:

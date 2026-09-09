@@ -123,3 +123,12 @@ def test_intent_classifier_contains_model_failure_as_unknown_route() -> None:
         intent=ChatIntent.UNKNOWN,
         error="RuntimeError: classifier unavailable",
     )
+
+
+def test_intent_classifier_returns_unknown_route_for_empty_messages() -> None:
+    classifier = create_intent_classifier(model=StructuredIntentModel())
+
+    assert classifier.classify([]) == IntentDecision(
+        intent=ChatIntent.UNKNOWN,
+        error="No messages",
+    )
