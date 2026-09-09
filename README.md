@@ -189,6 +189,11 @@ Mirror mutation is coordinated by a lock per repository, so different
 repositories can proceed independently. `lock_timeout` defaults to 30 seconds;
 contention beyond that raises `RepositoryMirrorLockTimeout` and becomes a
 structured `prepare_checkout` `ReviewError` when used through the Review graph.
+Call `cleanup_stale()` periodically to remove worktrees unused for 24 hours
+and mirrors unused for 30 days. It returns counts for removed resources,
+active resources skipped, and actionable cleanup errors; active worktrees hold
+leases and are never removed by that pass. Failed initialization or fetches are
+retried through a safe mirror rebuild.
 
 `create_deep_review_agent` also accepts an ordered collection of custom Lenses.
 They run concurrently with the built-in Lenses over the same fixed checkout and

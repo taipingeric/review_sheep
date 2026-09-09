@@ -194,6 +194,11 @@ each mirror coordinates fetch, worktree allocation, and worktree removal.
 Locks are independent per repository and have a 30-second default timeout;
 timeout failures surface as `RepositoryMirrorLockTimeout` and then as the
 structured checkout `ReviewError` at the Review seam.
+`cleanup_stale()` applies the documented 24-hour worktree and 30-day mirror
+retention defaults. It acquires the same per-repository lock, skips active
+worktree leases, and returns a `RepositoryCacheCleanupResult` with removal,
+skip, and failure counts. Failed initialization or fetches are rebuilt from a
+temporary complete clone while active worktrees block replacement.
 
 ## CI ReviewAgent flow
 

@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path
 from typing import Protocol, Self, TextIO
@@ -24,6 +25,23 @@ logger = logging.getLogger(__name__)
 
 class RepositoryMirrorLockTimeout(RuntimeError):
     """A repository mirror lock was not acquired before its configured timeout."""
+
+
+@dataclass(frozen=True)
+class RepositoryCacheCleanupResult:
+    """Outcome of one stale repository-cache cleanup pass."""
+
+    removed_worktrees: int = 0
+    removed_mirrors: int = 0
+    skipped_active_worktrees: int = 0
+    errors: tuple[str, ...] = ()
+
+
+@dataclass
+class _ActiveWorktree:
+    mirror: Path
+    lease_path: Path
+    lease: TextIO
 
 
 class PullRequestRevisionSource(Protocol):
@@ -127,9 +145,12 @@ class CachedGitCheckoutSource:
         worktree_root: str | Path | None = None,
         remote_url: Callable[[str], str] | None = None,
         lock_timeout: float = 30.0,
+        worktree_retention: float = 24 * 60 * 60,
+        mirror_retention: float = 30 * 24 * 60 * 60,
     ) -> None:
-        if not math.isfinite(lock_timeout) or lock_timeout < 0:
-            raise ValueError("lock_timeout must be a finite non-negative number")
+        _validate_non_negative_finite(lock_timeout, "lock_timeout")
+        _validate_non_negative_finite(worktree_retention, "worktree_retention")
+        _validate_non_negative_finite(mirror_retention, "mirror_retention")
         self._revisions = revisions
         self._cache_root = Path(cache_root).expanduser().resolve()
         self._worktree_root = (
@@ -139,7 +160,9 @@ class CachedGitCheckoutSource:
         )
         self._remote_url = remote_url or _github_repository_url
         self._lock_timeout = lock_timeout
-        self._active_worktrees: dict[Path, Path] = {}
+        self._worktree_retention = worktree_retention
+        self._mirror_retention = mirror_retention
+        self._active_worktrees: dict[Path, _ActiveWorktree] = {}
 
     def prepare_checkout(self, *, repo: str, number: int) -> ReviewCheckout:
         """Fetch immutable revisions and create one clean disposable worktree."""
@@ -158,13 +181,37 @@ class CachedGitCheckoutSource:
         ):
             remote = self._remote_url(repo)
             _reject_embedded_credentials(remote)
-            mirror_reused = self._ensure_mirror(mirror=mirror, remote=remote)
-            self._fetch_revision(
+            mirror_reused = self._ensure_mirror(
                 mirror=mirror,
-                revision=revision,
-                number=number,
+                remote=remote,
+                repo=repo,
             )
+            try:
+                self._fetch_revision(
+                    mirror=mirror,
+                    revision=revision,
+                    number=number,
+                )
+            except RuntimeError as error:
+                logger.warning(
+                    "checkout.cache.fetch.recovery repo=%s error=%s",
+                    repo,
+                    error,
+                )
+                self._rebuild_mirror(
+                    mirror=mirror,
+                    remote=remote,
+                    repo=repo,
+                    reason=error,
+                )
+                self._fetch_revision(
+                    mirror=mirror,
+                    revision=revision,
+                    number=number,
+                )
             worktree = self._new_worktree_path(repo)
+            lease_path = self._lease_path(worktree)
+            lease: TextIO | None = None
             try:
                 _git(
                     mirror.parent,
@@ -176,11 +223,16 @@ class CachedGitCheckoutSource:
                     str(worktree),
                     revision.head_sha,
                 )
+                lease = _acquire_file_lock(lease_path, blocking=False)
+                if lease is None:
+                    raise RuntimeError(f"worktree lease is already active: {worktree}")
                 checkout = _validate_checkout(
                     root=worktree,
                     revision=revision,
                 )
             except BaseException:
+                if lease is not None:
+                    _release_file_lock(lease)
                 try:
                     self._remove_worktree(mirror=mirror, root=worktree)
                 except Exception:
@@ -188,7 +240,12 @@ class CachedGitCheckoutSource:
                         "checkout.cache.prepare.cleanup_failed root=%s", worktree
                     )
                 raise
-            self._active_worktrees[checkout.root] = mirror
+            self._active_worktrees[checkout.root] = _ActiveWorktree(
+                mirror=mirror,
+                lease_path=lease_path,
+                lease=lease,
+            )
+            self._touch_mirror_activity(mirror)
         logger.info(
             "checkout.cache.prepare.complete repo=%s pr=%d mirror_reused=%s root=%s",
             repo,
@@ -201,29 +258,200 @@ class CachedGitCheckoutSource:
     def cleanup_checkout(self, checkout: ReviewCheckout) -> None:
         """Remove a worktree created by this source while retaining its mirror."""
         root = checkout.root.resolve()
-        mirror = self._active_worktrees.get(root)
-        if mirror is None:
+        active = self._active_worktrees.get(root)
+        if active is None:
             return
         try:
             with _RepositoryMirrorLock(
-                mirror.with_suffix(".lock"),
+                active.mirror.with_suffix(".lock"),
                 timeout=self._lock_timeout,
-                label=str(mirror),
+                label=str(active.mirror),
             ):
-                self._remove_worktree(mirror=mirror, root=root)
-        except Exception:
+                self._remove_worktree(mirror=active.mirror, root=root)
+        except BaseException:
             logger.exception("checkout.cache.cleanup.failed root=%s", root)
             raise
         finally:
+            _release_file_lock(active.lease)
             if not root.exists():
                 self._active_worktrees.pop(root, None)
+                active.lease_path.unlink(missing_ok=True)
         logger.info("checkout.cache.cleanup.complete root=%s", root)
+
+    def cleanup_stale(
+        self, *, now: float | None = None
+    ) -> RepositoryCacheCleanupResult:
+        """Remove stale worktrees and mirrors while preserving active resources.
+
+        Worktrees remain eligible only after ``worktree_retention`` seconds and
+        mirrors only after ``mirror_retention`` seconds without use. Active
+        worktrees hold a lease lock, so a cleanup pass from another process
+        skips them safely.
+        """
+        current_time = time.time() if now is None else now
+        removed_worktrees = 0
+        removed_mirrors = 0
+        skipped_active = 0
+        errors: list[str] = []
+        for mirror in sorted(self._cache_root.glob("*.git")):
+            try:
+                with _RepositoryMirrorLock(
+                    mirror.with_suffix(".lock"),
+                    timeout=self._lock_timeout,
+                    label=str(mirror),
+                ):
+                    worktrees = self._list_worktrees(mirror)
+                    for root in worktrees:
+                        if not root.is_relative_to(self._worktree_root):
+                            continue
+                        lease_path = self._lease_path(root)
+                        last_used = _resource_mtime(
+                            lease_path=lease_path,
+                            resource=root,
+                        )
+                        lease = _acquire_file_lock(lease_path, blocking=False)
+                        if lease is None:
+                            skipped_active += 1
+                            logger.info(
+                                "checkout.cache.cleanup.skip_active root=%s", root
+                            )
+                            continue
+                        try:
+                            if not _is_stale(
+                                last_used=last_used,
+                                now=current_time,
+                                retention=self._worktree_retention,
+                            ):
+                                continue
+                            self._remove_worktree(mirror=mirror, root=root)
+                            removed_worktrees += 1
+                            logger.info(
+                                "checkout.cache.cleanup.worktree_removed root=%s",
+                                root,
+                            )
+                        except Exception as error:
+                            message = f"worktree {root}: {error}"
+                            errors.append(message)
+                            logger.exception(
+                                "checkout.cache.cleanup.worktree_failed root=%s",
+                                root,
+                            )
+                        finally:
+                            _release_file_lock(lease)
+                            if not root.exists():
+                                lease_path.unlink(missing_ok=True)
+
+                    if not worktrees and _is_stale(
+                        last_used=_resource_mtime(
+                            lease_path=self._last_used_path(mirror),
+                            resource=mirror,
+                        ),
+                        now=current_time,
+                        retention=self._mirror_retention,
+                    ):
+                        shutil.rmtree(mirror)
+                        self._last_used_path(mirror).unlink(missing_ok=True)
+                        removed_mirrors += 1
+                        logger.info(
+                            "checkout.cache.cleanup.mirror_removed mirror=%s", mirror
+                        )
+            except Exception as error:
+                message = f"mirror {mirror}: {error}"
+                errors.append(message)
+                logger.exception(
+                    "checkout.cache.cleanup.mirror_failed mirror=%s", mirror
+                )
+        return RepositoryCacheCleanupResult(
+            removed_worktrees=removed_worktrees,
+            removed_mirrors=removed_mirrors,
+            skipped_active_worktrees=skipped_active,
+            errors=tuple(errors),
+        )
 
     def _mirror_path(self, repo: str) -> Path:
         return self._cache_root / f"{_repository_cache_key(repo)}.git"
 
     def _lock_path(self, repo: str) -> Path:
         return self._cache_root / f"{_repository_cache_key(repo)}.lock"
+
+    def _lease_path(self, root: Path) -> Path:
+        return self._worktree_root / f".{root.name}.lease"
+
+    def _last_used_path(self, mirror: Path) -> Path:
+        return mirror.with_suffix(".last-used")
+
+    def _touch_mirror_activity(self, mirror: Path) -> None:
+        self._last_used_path(mirror).touch(exist_ok=True)
+
+    def _list_worktrees(self, mirror: Path) -> list[Path]:
+        output = _git(
+            mirror.parent,
+            "--git-dir",
+            str(mirror),
+            "worktree",
+            "list",
+            "--porcelain",
+        )
+        paths: list[Path] = []
+        for line in output.splitlines():
+            if not line.startswith("worktree "):
+                continue
+            root = Path(line.removeprefix("worktree ")).resolve()
+            if root != mirror.resolve():
+                paths.append(root)
+        return paths
+
+    def _has_active_worktree(self, *, mirror: Path, repo: str) -> bool:
+        if any(active.mirror == mirror for active in self._active_worktrees.values()):
+            return True
+        pattern = f".{_repository_cache_key(repo)}-*.lease"
+        for lease_path in self._worktree_root.glob(pattern):
+            lease = _acquire_file_lock(lease_path, blocking=False)
+            if lease is None:
+                return True
+            _release_file_lock(lease)
+        return False
+
+    def _rebuild_mirror(
+        self,
+        *,
+        mirror: Path,
+        remote: str,
+        repo: str,
+        reason: Exception,
+    ) -> None:
+        if self._has_active_worktree(mirror=mirror, repo=repo):
+            raise RuntimeError(
+                f"cannot rebuild repository mirror while an active worktree "
+                f"exists for {repo}: {reason}"
+            ) from reason
+        logger.warning(
+            "checkout.cache.mirror.rebuild.start repo=%s mirror=%s reason=%s",
+            repo,
+            mirror,
+            reason,
+        )
+        temporary_mirror = self._clone_to_temporary(mirror=mirror, remote=remote)
+        quarantine = mirror.parent / f".{mirror.name}.corrupt-{uuid4().hex}"
+        try:
+            if mirror.exists():
+                os.replace(mirror, quarantine)
+            os.replace(temporary_mirror, mirror)
+        except BaseException:
+            if temporary_mirror.exists():
+                shutil.rmtree(temporary_mirror, ignore_errors=True)
+            if quarantine.exists() and not mirror.exists():
+                os.replace(quarantine, mirror)
+            raise
+        if quarantine.exists():
+            try:
+                shutil.rmtree(quarantine)
+            except OSError:
+                logger.exception(
+                    "checkout.cache.mirror.quarantine_cleanup_failed path=%s",
+                    quarantine,
+                )
+        logger.info("checkout.cache.mirror.rebuild.complete mirror=%s", mirror)
 
     def _remove_worktree(self, *, mirror: Path, root: Path) -> None:
         if root.exists():
@@ -236,40 +464,79 @@ class CachedGitCheckoutSource:
                 "--force",
                 str(root),
             )
+        else:
+            _git(
+                mirror.parent,
+                "--git-dir",
+                str(mirror),
+                "worktree",
+                "prune",
+                "--expire",
+                "now",
+            )
         if root.exists():
             shutil.rmtree(root)
 
-    def _ensure_mirror(self, *, mirror: Path, remote: str) -> bool:
+    def _ensure_mirror(self, *, mirror: Path, remote: str, repo: str) -> bool:
         mirror.parent.mkdir(parents=True, exist_ok=True)
         if mirror.exists():
             if not mirror.is_dir():
-                raise RuntimeError(
+                corruption = RuntimeError(
                     f"repository mirror path is not a directory: {mirror}"
                 )
-            if (
-                _git(
+                self._rebuild_mirror(
+                    mirror=mirror,
+                    remote=remote,
+                    repo=repo,
+                    reason=corruption,
+                )
+                return False
+            try:
+                is_bare = _git(
                     mirror.parent,
                     "--git-dir",
                     str(mirror),
                     "rev-parse",
                     "--is-bare-repository",
                 )
-                != "true"
-            ):
-                raise RuntimeError(f"repository mirror is not bare: {mirror}")
+            except RuntimeError as error:
+                self._rebuild_mirror(
+                    mirror=mirror,
+                    remote=remote,
+                    repo=repo,
+                    reason=error,
+                )
+                return False
+            if is_bare != "true":
+                corruption = RuntimeError(f"repository mirror is not bare: {mirror}")
+                self._rebuild_mirror(
+                    mirror=mirror,
+                    remote=remote,
+                    repo=repo,
+                    reason=corruption,
+                )
+                return False
             logger.info("checkout.cache.mirror.reused mirror=%s", mirror)
             return True
         logger.info("checkout.cache.mirror.initialize mirror=%s", mirror)
-        temporary_mirror = Path(
-            tempfile.mkdtemp(prefix=f".{mirror.name}-", dir=mirror.parent)
-        )
+        temporary_mirror = self._clone_to_temporary(mirror=mirror, remote=remote)
         try:
-            _git(mirror.parent, "clone", "--bare", remote, str(temporary_mirror))
             os.replace(temporary_mirror, mirror)
         except BaseException:
             shutil.rmtree(temporary_mirror, ignore_errors=True)
             raise
         return False
+
+    def _clone_to_temporary(self, *, mirror: Path, remote: str) -> Path:
+        temporary_mirror = Path(
+            tempfile.mkdtemp(prefix=f".{mirror.name}-", dir=mirror.parent)
+        )
+        try:
+            _git(mirror.parent, "clone", "--bare", remote, str(temporary_mirror))
+        except BaseException:
+            shutil.rmtree(temporary_mirror, ignore_errors=True)
+            raise
+        return temporary_mirror
 
     def _fetch_revision(
         self,
@@ -330,6 +597,44 @@ class CachedGitCheckoutSource:
     def _new_worktree_path(self, repo: str) -> Path:
         self._worktree_root.mkdir(parents=True, exist_ok=True)
         return self._worktree_root / f"{_repository_cache_key(repo)}-{uuid4().hex}"
+
+
+def _acquire_file_lock(path: Path, *, blocking: bool) -> TextIO | None:
+    try:
+        handle = path.open("a+")
+    except FileNotFoundError:
+        return None
+    try:
+        operation = LOCK_EX if blocking else LOCK_EX | LOCK_NB
+        flock(handle.fileno(), operation)
+    except BlockingIOError:
+        handle.close()
+        return None
+    except BaseException:
+        handle.close()
+        raise
+    return handle
+
+
+def _release_file_lock(handle: TextIO) -> None:
+    try:
+        flock(handle.fileno(), LOCK_UN)
+    finally:
+        handle.close()
+
+
+def _resource_mtime(*, lease_path: Path, resource: Path) -> float:
+    timestamp_path = lease_path if lease_path.exists() else resource
+    return timestamp_path.stat().st_mtime
+
+
+def _is_stale(*, last_used: float, now: float, retention: float) -> bool:
+    return now - last_used >= retention
+
+
+def _validate_non_negative_finite(value: float, name: str) -> None:
+    if not math.isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite non-negative number")
 
 
 def _validate_checkout(*, root: Path, revision: PullRequestRevision) -> ReviewCheckout:
