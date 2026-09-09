@@ -150,6 +150,7 @@ def test_cached_checkout_reuses_one_mirror_and_pins_isolated_worktrees(
     caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
+    caplog.set_level("INFO")
     remote, base_sha, head_sha = _repository(tmp_path)
     revisions = FakeRevisionSource(_revision(base_sha, head_sha))
     source = CachedGitCheckoutSource(
@@ -157,7 +158,6 @@ def test_cached_checkout_reuses_one_mirror_and_pins_isolated_worktrees(
         cache_root=tmp_path / "cache",
         remote_url=lambda _: str(remote),
     )
-    caplog.set_level("INFO")
 
     first = source.prepare_checkout(repo="acme/widgets", number=42)
     second = source.prepare_checkout(repo="acme/widgets", number=42)
@@ -172,6 +172,10 @@ def test_cached_checkout_reuses_one_mirror_and_pins_isolated_worktrees(
     assert len(list((tmp_path / "cache").glob("*.git"))) == 1
     assert caplog.text.count("checkout.cache.mirror.initialize") == 1
     assert caplog.text.count("checkout.cache.mirror.reused") == 1
+    assert caplog.text.count("checkout.cache.miss") == 1
+    assert caplog.text.count("checkout.cache.hit") == 1
+    assert caplog.text.count("checkout.cache.mirror.fetch.complete") == 2
+    assert caplog.text.count("checkout.cache.worktree.created") == 2
 
     source.cleanup_checkout(first)
     source.cleanup_checkout(second)
@@ -214,8 +218,10 @@ def test_cached_checkout_coordinates_concurrent_same_repository_reviews(
 
 
 def test_cached_checkout_reports_lock_contention_after_configured_timeout(
+    caplog: pytest.LogCaptureFixture,
     tmp_path: Path,
 ) -> None:
+    caplog.set_level("INFO")
     remote, base_sha, head_sha = _repository(tmp_path)
     entered = threading.Event()
     release = threading.Event()
@@ -253,6 +259,7 @@ def test_cached_checkout_reports_lock_contention_after_configured_timeout(
             release.set()
         checkout = future.result()
 
+    assert "checkout.cache.lock.contended" in caplog.text
     holder.cleanup_checkout(checkout)
 
 

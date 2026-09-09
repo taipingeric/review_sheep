@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from review_sheep.config import ChatConfig, CIConfig, LangfuseConfig, MLflowConfig
@@ -216,6 +218,157 @@ def test_ci_config_uses_workspace_fallback_and_normalizes_optional_values() -> N
         }
     )
     assert default_checkout.checkout == "."
+
+
+def test_ci_config_reads_repository_cache_controls_from_environment(
+    tmp_path: Path,
+) -> None:
+    cache_root = tmp_path / "repository-cache"
+    config = CIConfig.from_environment(
+        {
+            "GITHUB_REPOSITORY": "acme/widgets",
+            "REVIEW_PR_NUMBER": "42",
+            "GITHUB_TOKEN": "github-token",
+            "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+            "ANTHROPIC_BASE_URL": "https://gateway.example",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+            "REVIEW_CACHE_ROOT": str(cache_root),
+            "REVIEW_CACHE_LOCK_TIMEOUT": "4.5",
+            "REVIEW_CACHE_WORKTREE_RETENTION": "3600",
+            "REVIEW_CACHE_MIRROR_RETENTION": "86400",
+            "REVIEW_CACHE_CLEANUP": "true",
+        }
+    )
+
+    assert config.cache_root == str(cache_root.resolve())
+    assert config.cache_lock_timeout == 4.5
+    assert config.cache_worktree_retention == 3600
+    assert config.cache_mirror_retention == 86400
+    assert config.cache_cleanup is True
+
+
+def test_ci_config_explicit_cache_controls_override_environment(
+    tmp_path: Path,
+) -> None:
+    config = CIConfig.from_environment(
+        {
+            "GITHUB_REPOSITORY": "acme/widgets",
+            "REVIEW_PR_NUMBER": "42",
+            "GITHUB_TOKEN": "github-token",
+            "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+            "ANTHROPIC_BASE_URL": "https://gateway.example",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+            "REVIEW_CACHE_ROOT": str(tmp_path / "environment-cache"),
+            "REVIEW_CACHE_LOCK_TIMEOUT": "30",
+            "REVIEW_CACHE_CLEANUP": "false",
+        },
+        cache_root=str(tmp_path / "explicit-cache"),
+        cache_lock_timeout=2.0,
+        cache_cleanup=True,
+    )
+
+    assert config.cache_root == str((tmp_path / "explicit-cache").resolve())
+    assert config.cache_lock_timeout == 2.0
+    assert config.cache_cleanup is True
+
+
+@pytest.mark.parametrize(
+    ("environment", "message"),
+    [
+        ({"REVIEW_CACHE_LOCK_TIMEOUT": "not-a-number"}, "REVIEW_CACHE_LOCK_TIMEOUT"),
+        ({"REVIEW_CACHE_WORKTREE_RETENTION": "-1"}, "non-negative"),
+        ({"REVIEW_CACHE_CLEANUP": "sometimes"}, "REVIEW_CACHE_CLEANUP"),
+    ],
+)
+def test_ci_config_rejects_invalid_repository_cache_controls(
+    environment: dict[str, str], message: str
+) -> None:
+    values = {
+        "GITHUB_REPOSITORY": "acme/widgets",
+        "REVIEW_PR_NUMBER": "42",
+        "GITHUB_TOKEN": "github-token",
+        "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+        "ANTHROPIC_BASE_URL": "https://gateway.example",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+        **environment,
+    }
+
+    with pytest.raises((RuntimeError, ValueError), match=message):
+        CIConfig.from_environment(values)
+
+
+def test_ci_config_rejects_unsafe_relative_cache_root() -> None:
+    with pytest.raises(ValueError, match="absolute"):
+        CIConfig(
+            repo="acme/widgets",
+            pull_request_number=42,
+            checkout=".",
+            instructions="",
+            model_tier="sonnet",
+            model="gateway-sonnet",
+            github_token="github-token",
+            anthropic_auth_token="anthropic-token",
+            base_url="https://gateway.example",
+            cache_root="relative-cache",
+        )
+
+
+def test_ci_config_rejects_shared_existing_cache_root(tmp_path: Path) -> None:
+    cache_root = tmp_path / "shared-cache"
+    cache_root.mkdir(mode=0o755)
+    cache_root.chmod(0o755)
+
+    with pytest.raises(ValueError, match="permissions 0700"):
+        CIConfig(
+            repo="acme/widgets",
+            pull_request_number=42,
+            checkout=".",
+            instructions="",
+            model_tier="sonnet",
+            model="gateway-sonnet",
+            github_token="github-token",
+            anthropic_auth_token="anthropic-token",
+            base_url="https://gateway.example",
+            cache_root=str(cache_root),
+        )
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["cache_lock_timeout", "cache_worktree_retention", "cache_mirror_retention"],
+)
+def test_ci_config_rejects_non_numeric_cache_values(field: str) -> None:
+    values = {
+        "repo": "acme/widgets",
+        "pull_request_number": 42,
+        "checkout": ".",
+        "instructions": "",
+        "model_tier": "sonnet",
+        "model": "gateway-sonnet",
+        "github_token": "github-token",
+        "anthropic_auth_token": "anthropic-token",
+        "base_url": "https://gateway.example",
+        field: "not-a-number",
+    }
+
+    with pytest.raises((ValueError, TypeError), match="finite non-negative"):
+        CIConfig(**values)  # type: ignore[arg-type]
+
+
+def test_ci_config_rejects_non_boolean_cache_cleanup() -> None:
+    with pytest.raises((ValueError, TypeError), match="cache_cleanup"):
+        CIConfig(
+            repo="acme/widgets",
+            pull_request_number=42,
+            checkout=".",
+            instructions="",
+            model_tier="sonnet",
+            model="gateway-sonnet",
+            github_token="github-token",
+            anthropic_auth_token="anthropic-token",
+            base_url="https://gateway.example",
+            cache_cleanup="yes",  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(

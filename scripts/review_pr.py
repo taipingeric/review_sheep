@@ -22,6 +22,29 @@ def _parser() -> argparse.ArgumentParser:
         "--model-tier",
         choices=("haiku", "sonnet", "opus"),
     )
+    parser.add_argument("--cache-root")
+    parser.add_argument(
+        "--no-cache",
+        action="store_const",
+        const="",
+        dest="cache_root",
+        help="Disable the repository mirror cache for this Review.",
+    )
+    parser.add_argument("--cache-lock-timeout", type=float)
+    parser.add_argument("--cache-worktree-retention", type=float)
+    parser.add_argument("--cache-mirror-retention", type=float)
+    cleanup = parser.add_mutually_exclusive_group()
+    cleanup.add_argument(
+        "--cache-cleanup",
+        action="store_true",
+        dest="cache_cleanup",
+    )
+    cleanup.add_argument(
+        "--no-cache-cleanup",
+        action="store_false",
+        dest="cache_cleanup",
+    )
+    parser.set_defaults(cache_cleanup=None)
     return parser
 
 
@@ -35,8 +58,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             checkout=args.checkout,
             instructions=args.instructions,
             model_tier=args.model_tier,
+            cache_root=args.cache_root,
+            cache_lock_timeout=args.cache_lock_timeout,
+            cache_worktree_retention=args.cache_worktree_retention,
+            cache_mirror_retention=args.cache_mirror_retention,
+            cache_cleanup=args.cache_cleanup,
         )
-    except RuntimeError as config_error:
+    except (RuntimeError, ValueError) as config_error:
         print(f"error: {config_error}", file=sys.stderr)
         return 2
     return run_review(config=config)

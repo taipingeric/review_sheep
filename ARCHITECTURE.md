@@ -200,6 +200,14 @@ worktree leases, and returns a `RepositoryCacheCleanupResult` with removal,
 skip, and failure counts. Failed initialization or fetches are rebuilt from a
 temporary complete clone while active worktrees block replacement.
 
+The non-interactive CI entrypoint selects this adapter when
+`REVIEW_CACHE_ROOT` (or `--cache-root`) is configured; otherwise it retains the
+fixed `GitCheckoutSource` adapter. `CIConfig` validates the absolute cache root,
+finite non-negative timeout and retention values, and the optional cleanup
+flag. `--no-cache` provides an explicit bypass. Runtime logs expose cache
+state transitions and aggregate cleanup results without logging credentials,
+remote URLs, diffs, or repository contents.
+
 ## CI ReviewAgent flow
 
 ```mermaid
