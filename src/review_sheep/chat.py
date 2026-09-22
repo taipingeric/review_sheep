@@ -92,7 +92,10 @@ def main(
 
         inquiry_agent = create_inquiry_agent(model=model, github=github)
         intent_classifier = create_intent_classifier(model=model)
-        review_agent = reviewer_factory(source=github, model=model)
+        reviewer_options: dict[str, Any] = {"source": github, "model": model}
+        if config.lens_concurrency is not None:
+            reviewer_options["lens_concurrency"] = config.lens_concurrency
+        review_agent = reviewer_factory(**reviewer_options)
         logger.info("chat.agents.ready inquiry=true review=manifest")
         session_id = uuid.uuid4().hex
         if trace_handlers:

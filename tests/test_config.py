@@ -15,6 +15,7 @@ def test_chat_config_reads_external_environment() -> None:
             "OPENAI_API_KEY": "model-key",
             "BASE_URL": " https://model.example ",
             "REVIEW_LOG_LEVEL": "debug",
+            "REVIEW_LENS_CONCURRENCY": "2",
             "LANGFUSE_PUBLIC_KEY": "public-key",
             "LANGFUSE_SECRET_KEY": "secret-key",
             "LANGFUSE_BASE_URL": "https://trace.example",
@@ -27,6 +28,7 @@ def test_chat_config_reads_external_environment() -> None:
     assert config.model == "gpt-injected"
     assert config.base_url == "https://model.example"
     assert config.review_log_level == "DEBUG"
+    assert config.lens_concurrency == 2
     assert config.langfuse == LangfuseConfig(
         public_key="public-key",
         secret_key="secret-key",
@@ -237,6 +239,7 @@ def test_ci_config_reads_repository_cache_controls_from_environment(
             "REVIEW_CACHE_WORKTREE_RETENTION": "3600",
             "REVIEW_CACHE_MIRROR_RETENTION": "86400",
             "REVIEW_CACHE_CLEANUP": "true",
+            "REVIEW_LENS_CONCURRENCY": "2",
         }
     )
 
@@ -245,6 +248,7 @@ def test_ci_config_reads_repository_cache_controls_from_environment(
     assert config.cache_worktree_retention == 3600
     assert config.cache_mirror_retention == 86400
     assert config.cache_cleanup is True
+    assert config.lens_concurrency == 2
 
 
 def test_ci_config_explicit_cache_controls_override_environment(
@@ -261,15 +265,34 @@ def test_ci_config_explicit_cache_controls_override_environment(
             "REVIEW_CACHE_ROOT": str(tmp_path / "environment-cache"),
             "REVIEW_CACHE_LOCK_TIMEOUT": "30",
             "REVIEW_CACHE_CLEANUP": "false",
+            "REVIEW_LENS_CONCURRENCY": "3",
         },
         cache_root=str(tmp_path / "explicit-cache"),
         cache_lock_timeout=2.0,
         cache_cleanup=True,
+        lens_concurrency=1,
     )
 
     assert config.cache_root == str((tmp_path / "explicit-cache").resolve())
     assert config.cache_lock_timeout == 2.0
     assert config.cache_cleanup is True
+    assert config.lens_concurrency == 1
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "not-a-number"])
+def test_ci_config_rejects_invalid_lens_concurrency(value: str) -> None:
+    values = {
+        "GITHUB_REPOSITORY": "acme/widgets",
+        "REVIEW_PR_NUMBER": "42",
+        "GITHUB_TOKEN": "github-token",
+        "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+        "ANTHROPIC_BASE_URL": "https://gateway.example",
+        "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+        "REVIEW_LENS_CONCURRENCY": value,
+    }
+
+    with pytest.raises((RuntimeError, ValueError), match="positive integer"):
+        CIConfig.from_environment(values)
 
 
 @pytest.mark.parametrize(

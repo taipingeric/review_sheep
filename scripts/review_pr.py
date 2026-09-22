@@ -18,6 +18,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--pr-number", type=int)
     parser.add_argument("--checkout")
     parser.add_argument("--instructions")
+    parser.add_argument("--lens-concurrency", type=int)
     parser.add_argument(
         "--model-tier",
         choices=("haiku", "sonnet", "opus"),
@@ -57,6 +58,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             pull_request_number=args.pr_number,
             checkout=args.checkout,
             instructions=args.instructions,
+            lens_concurrency=args.lens_concurrency,
             model_tier=args.model_tier,
             cache_root=args.cache_root,
             cache_lock_timeout=args.cache_lock_timeout,

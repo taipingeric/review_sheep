@@ -134,11 +134,14 @@ def main(
                 config.cache_worktree_retention,
                 config.cache_mirror_retention,
             )
-        reviewer = reviewer_factory(
-            source=checkout,
-            model=model,
-            instructions=config.instructions,
-        )
+        reviewer_options: dict[str, Any] = {
+            "source": checkout,
+            "model": model,
+            "instructions": config.instructions,
+        }
+        if config.lens_concurrency is not None:
+            reviewer_options["lens_concurrency"] = config.lens_concurrency
+        reviewer = reviewer_factory(**reviewer_options)
         with set_config_context(trace_config or ensure_config()) as context:
             result: Review | ReviewError = context.run(
                 reviewer.review,

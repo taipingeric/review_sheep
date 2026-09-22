@@ -99,7 +99,10 @@ class FailingChatModel(BaseChatModel):
 
 
 def _chat_config(
-    *, base_url: str | None = None, mlflow: MLflowConfig | None = None
+    *,
+    base_url: str | None = None,
+    mlflow: MLflowConfig | None = None,
+    lens_concurrency: int | None = None,
 ) -> ChatConfig:
     return ChatConfig(
         github_token="test-token",
@@ -107,6 +110,7 @@ def _chat_config(
         api_key="test-key",
         base_url=base_url,
         mlflow=mlflow,
+        lens_concurrency=lens_concurrency,
     )
 
 
@@ -144,7 +148,7 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation() -> None:
         reviewer_configs.append(kwargs)
 
     exit_code = main(
-        config=_chat_config(),
+        config=_chat_config(lens_concurrency=2),
         input_fn=end_input,
         output=output,
         error=errors,
@@ -162,6 +166,7 @@ def test_chat_exits_cleanly_on_eof_during_the_conversation() -> None:
     assert errors.getvalue() == ""
     assert github.closed is True
     assert len(reviewer_configs) == 1
+    assert reviewer_configs[0]["lens_concurrency"] == 2
     assert reviewer_configs[0]["source"].__class__.__name__ == (
         "GitHubPullRequestReader"
     )

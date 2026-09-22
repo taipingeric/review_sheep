@@ -209,6 +209,7 @@ def test_manifest_review_runs_every_lens_over_the_same_virtual_files(
         source=source,
         model="openai:gpt-test",
         instructions="Focus on regressions.",
+        lens_concurrency=1,
     ).review(repo="acme/widgets", number=42)
 
     assert isinstance(result, Review)

@@ -8,7 +8,6 @@ from pathlib import PurePosixPath
 from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
 
 from deepagents import create_deep_agent as _create_deep_agent
-from deepagents.backends import FilesystemBackend
 from deepagents.middleware.filesystem import FilesystemPermission
 from langchain.agents.structured_output import ToolStrategy
 from langchain_core.language_models import BaseChatModel
@@ -18,6 +17,7 @@ from langchain_core.tools import BaseTool, tool
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from review_sheep.backends import ReviewFilesystemBackend
 from review_sheep.checkout import git_changed_files, git_diff
 from review_sheep.domain import (
     CustomLens,
@@ -45,9 +45,11 @@ logger = logging.getLogger(__name__)
 _CHECKOUT_PROMPT = (
     "The repository is a clean local worktree fixed at the pull request head SHA. "
     "Start by calling list_changed_files, then call get_diff for relevant changed "
-    "paths. Use read_file, grep, and glob to inspect complete files and trace "
-    "unchanged callers, callees, tests, and configuration. Treat the worktree as "
-    "read-only; never call write_file, edit_file, or delete_file. "
+    "paths. Prefer exact paths from those tools. Use read_file, grep, and scoped "
+    "glob patterns to inspect complete files and trace unchanged callers, callees, "
+    "tests, and configuration. Never use a repository-root broad glob such as '*', "
+    "'**', or '**/*'; narrow the directory or pattern before searching. Treat the "
+    "worktree as read-only; never call write_file, edit_file, or delete_file. "
 )
 
 
@@ -88,11 +90,13 @@ class DeepAgentReviewRunner:
         instructions: str = "",
         tools: Sequence[BaseTool] = (),
         custom_lenses: Sequence[CustomLens] = (),
+        lens_concurrency: int | None = None,
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
         self._tools = tuple(tools)
         self._custom_lenses = validate_custom_lenses(custom_lenses)
+        self._lens_concurrency = lens_concurrency
 
     def run(
         self,
@@ -112,6 +116,7 @@ class DeepAgentReviewRunner:
         findings = run_lenses_in_parallel(
             lambda lens: self._run_lens(lens, checkout, config=effective_config),
             self._custom_lenses,
+            lens_concurrency=self._lens_concurrency,
         )
         logger.info("checkout.review.complete findings=%d", len(findings))
         return findings
@@ -128,7 +133,10 @@ class DeepAgentReviewRunner:
         agent = _create_deep_agent(
             model=self._model,
             tools=[*_checkout_tools(checkout), *self._tools],
-            backend=FilesystemBackend(root_dir=checkout.root, virtual_mode=True),
+            backend=ReviewFilesystemBackend(
+                root_dir=checkout.root,
+                virtual_mode=True,
+            ),
             permissions=[
                 FilesystemPermission(
                     operations=["write"],
@@ -329,6 +337,7 @@ def create_deep_review_agent(
     instructions: str = "",
     tools: Sequence[BaseTool] = (),
     custom_lenses: Sequence[CustomLens] = (),
+    lens_concurrency: int | None = None,
 ) -> ReviewAgent:
     """Create the production Review workflow with one deep agent per Lens."""
     return create_review_agent(
@@ -338,5 +347,6 @@ def create_deep_review_agent(
             instructions=instructions,
             tools=tools,
             custom_lenses=custom_lenses,
+            lens_concurrency=lens_concurrency,
         ),
     )

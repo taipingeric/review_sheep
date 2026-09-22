@@ -98,11 +98,13 @@ class ManifestReviewRunner:
         instructions: str = "",
         tools: Sequence[BaseTool] = (),
         custom_lenses: Sequence[CustomLens] = (),
+        lens_concurrency: int | None = None,
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
         self._tools = tuple(tools)
         self._custom_lenses = validate_custom_lenses(custom_lenses)
+        self._lens_concurrency = lens_concurrency
 
     def run(
         self,
@@ -121,6 +123,7 @@ class ManifestReviewRunner:
         findings = run_lenses_in_parallel(
             lambda lens: self._run_lens(lens, workspace, config=effective_config),
             self._custom_lenses,
+            lens_concurrency=self._lens_concurrency,
         )
         logger.info("manifest.review.complete findings=%d", len(findings))
         return findings
@@ -368,6 +371,7 @@ def create_manifest_review_agent(
     instructions: str = "",
     tools: Sequence[BaseTool] = (),
     custom_lenses: Sequence[CustomLens] = (),
+    lens_concurrency: int | None = None,
 ) -> ManifestReviewAgent:
     """Create the production Manifest Review workflow used by Chat."""
     return ManifestReviewAgent(
@@ -377,5 +381,6 @@ def create_manifest_review_agent(
             instructions=instructions,
             tools=tools,
             custom_lenses=custom_lenses,
+            lens_concurrency=lens_concurrency,
         ),
     )

@@ -118,6 +118,7 @@ class CIConfig:
     cache_worktree_retention: float = 24 * 60 * 60
     cache_mirror_retention: float = 30 * 24 * 60 * 60
     cache_cleanup: bool = False
+    lens_concurrency: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repo", _required(self.repo, "repo"))
@@ -163,6 +164,7 @@ class CIConfig:
         )
         if not isinstance(self.cache_cleanup, bool):
             raise TypeError("cache_cleanup must be true or false")
+        _validate_positive_int_or_none(self.lens_concurrency, "lens_concurrency")
 
     @classmethod
     def from_environment(
@@ -184,6 +186,7 @@ class CIConfig:
         cache_worktree_retention: float | None = None,
         cache_mirror_retention: float | None = None,
         cache_cleanup: bool | None = None,
+        lens_concurrency: int | None = None,
     ) -> CIConfig:
         """Build CI config from environment, with explicit values winning."""
         values = os.environ if environ is None else environ
@@ -288,6 +291,11 @@ class CIConfig:
                 cache_cleanup,
                 False,
             ),
+            lens_concurrency=_environment_int(
+                values,
+                "REVIEW_LENS_CONCURRENCY",
+                lens_concurrency,
+            ),
         )
 
 
@@ -300,6 +308,7 @@ class ChatConfig:
     api_key: str = field(repr=False)
     base_url: str | None = None
     review_log_level: str = "INFO"
+    lens_concurrency: int | None = None
     langfuse: LangfuseConfig | None = None
     mlflow: MLflowConfig | None = None
 
@@ -316,6 +325,7 @@ class ChatConfig:
             "review_log_level",
             self.review_log_level.strip().upper() or "INFO",
         )
+        _validate_positive_int_or_none(self.lens_concurrency, "lens_concurrency")
 
     @classmethod
     def from_environment(cls, environ: Mapping[str, str] | None = None) -> ChatConfig:
@@ -326,6 +336,7 @@ class ChatConfig:
             api_key=_environment_required(values, "OPENAI_API_KEY"),
             base_url=values.get("BASE_URL"),
             review_log_level=values.get("REVIEW_LOG_LEVEL", "INFO"),
+            lens_concurrency=_environment_int(values, "REVIEW_LENS_CONCURRENCY", None),
             langfuse=LangfuseConfig.from_environment(values),
             mlflow=MLflowConfig.from_environment(values),
         )
@@ -383,6 +394,23 @@ def _environment_float(
     return parsed
 
 
+def _environment_int(
+    values: Mapping[str, str], name: str, explicit: int | None
+) -> int | None:
+    raw = str(explicit) if explicit is not None else values.get(name, "")
+    if not raw.strip():
+        return None
+    try:
+        parsed = int(raw)
+    except ValueError as error:
+        raise RuntimeError(f"{name} must be a positive integer") from error
+    try:
+        _validate_positive_int_or_none(parsed, name)
+    except ValueError as error:
+        raise RuntimeError(str(error)) from error
+    return parsed
+
+
 def _environment_bool(
     values: Mapping[str, str],
     name: str,
@@ -397,3 +425,10 @@ def _environment_bool(
     if raw in {"0", "false", "no", "off"}:
         return False
     raise RuntimeError(f"{name} must be true or false")
+
+
+def _validate_positive_int_or_none(value: object, name: str) -> None:
+    if value is None:
+        return
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")

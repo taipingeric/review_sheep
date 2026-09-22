@@ -76,6 +76,7 @@ def _ci_config(
     cache_worktree_retention: float = 24 * 60 * 60,
     cache_mirror_retention: float = 30 * 24 * 60 * 60,
     cache_cleanup: bool = False,
+    lens_concurrency: int | None = None,
 ) -> CIConfig:
     return CIConfig(
         repo="acme/widgets",
@@ -95,6 +96,7 @@ def _ci_config(
         cache_worktree_retention=cache_worktree_retention,
         cache_mirror_retention=cache_mirror_retention,
         cache_cleanup=cache_cleanup,
+        lens_concurrency=lens_concurrency,
     )
 
 
@@ -118,7 +120,7 @@ def test_ci_prints_one_report_and_closes_github_client(
         return "test:model"
 
     exit_code = main(
-        config=_ci_config(checkout=str(tmp_path)),
+        config=_ci_config(checkout=str(tmp_path), lens_concurrency=2),
         output=output,
         error=errors,
         github_factory=lambda _: github,
@@ -141,6 +143,7 @@ No Findings.
     assert reviewer.calls == [("acme/widgets", 42)]
     assert reviewer_configs[0]["model"] == "test:model"
     assert reviewer_configs[0]["instructions"] == "Focus on authorization."
+    assert reviewer_configs[0]["lens_concurrency"] == 2
     assert model_configs == [
         {
             "model": "gateway-sonnet",

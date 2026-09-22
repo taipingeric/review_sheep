@@ -260,6 +260,7 @@ custom_lens = CustomLens(
 reviewer = create_deep_review_agent(
     source=checkout,
     model=model,
+    lens_concurrency=2,
     custom_lenses=[custom_lens],
 )
 result = reviewer.review(repo="acme/widgets", number=42)
@@ -296,6 +297,7 @@ custom_lenses = [
 reviewer = create_manifest_review_agent(
     source=source,
     model=model,
+    lens_concurrency=2,
     custom_lenses=custom_lenses,
 )
 ```
@@ -376,6 +378,11 @@ The library entrypoints consume explicit configuration objects. Construct a
 `review_sheep.ci.main` when embedding Review Sheep in an application. These
 core paths do not read process environment values or files.
 
+Set `lens_concurrency` on `ChatConfig`, `CIConfig`,
+`create_deep_review_agent`, or `create_manifest_review_agent` to limit how many
+Lens agents run at once. The default is one worker per configured Lens. The
+`review_pull_request_tool` helper accepts the same argument.
+
 For example, an application can inject values from its own secret manager:
 
 ```python
@@ -399,14 +406,16 @@ export GITHUB_TOKEN="<read-only-github-token>"
 export OPENAI_MODEL="<model-id>"
 export OPENAI_API_KEY="<provider-api-key>"
 export REVIEW_LOG_LEVEL="INFO"
+# Optional: export REVIEW_LENS_CONCURRENCY="3"
 # Optional: export BASE_URL="<compatible-endpoint>/v1"
 uv run python scripts/review_chat.py
 ```
 
 The CI adapter uses the environment and command-line values documented in
 [GitHub Actions PR Review](#github-actions-pr-review). Its non-secret CLI
-arguments (`--repo`, `--pr-number`, `--checkout`, `--instructions`, and
-`--model-tier`) take precedence over their environment defaults. Explicit
+arguments (`--repo`, `--pr-number`, `--checkout`, `--instructions`,
+`--lens-concurrency`, and `--model-tier`) take precedence over their environment
+defaults. Explicit
 configuration passed directly to a library entrypoint takes precedence over
 all adapter inputs because the core entrypoint does not consult the
 environment. Keep GitHub and model credentials in process environment values,
@@ -415,8 +424,9 @@ arguments, commit them to a checkout, or put them in example files.
 
 Neither production entrypoint loads a local `.env` file. A local shell, CI
 secret adapter, or secrets manager must populate the process environment
-explicitly. The examples use placeholders only and do not require a checked-out
-`.env` file.
+explicitly. The checked-in `.env.example` documents the non-secret Lens
+concurrency setting; copy or adapt it in the environment-loading mechanism
+owned by your application.
 
 The following optional tracing variables are read from the process environment:
 
@@ -424,6 +434,8 @@ The following optional tracing variables are read from the process environment:
   `LANGFUSE_BASE_URL`, `LANGFUSE_TRACING_ENVIRONMENT`, and
   `LANGFUSE_TRACING_ENABLED=false`.
 - MLflow: `MLFLOW_TRACKING_URI` and optional `MLFLOW_EXPERIMENT_NAME`.
+- Review execution: optional `REVIEW_LENS_CONCURRENCY` limits the number of
+  Lens agents running concurrently. It must be a positive integer.
 
 Ask what Review Sheep can do, ask metadata questions, or request a changed-code
 Review naturally. The classifier selects the correct agent path; ReviewBot asks

@@ -24,6 +24,7 @@ def review_pull_request_tool(
     instructions: str = "",
     tools: Sequence[BaseTool] = (),
     custom_lenses: Sequence[CustomLens] = (),
+    lens_concurrency: int | None = None,
 ) -> BaseTool:
     """Build one LangChain tool that runs a full Manifest Review.
 
@@ -39,6 +40,7 @@ def review_pull_request_tool(
         instructions=instructions,
         tools=tools,
         custom_lenses=custom_lenses,
+        lens_concurrency=lens_concurrency,
     )
 
     @tool

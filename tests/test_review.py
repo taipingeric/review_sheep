@@ -32,6 +32,7 @@ from review_sheep import (
 )
 from review_sheep import lenses as lenses_module
 from review_sheep import review as review_module
+from review_sheep.backends import ReviewFilesystemBackend
 
 
 def _checkout(root: Path) -> ReviewCheckout:
@@ -293,6 +294,7 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
         source=source,
         model="openai:gpt-5-mini",
         instructions="Focus on authorization regressions.",
+        lens_concurrency=1,
     ).review(repo="acme/widgets", number=42)
 
     assert isinstance(result, Review)
@@ -306,7 +308,9 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
         isinstance(call["response_format"], ToolStrategy) for call in factory_calls
     )
     assert all(call["model"] == "openai:gpt-5-mini" for call in factory_calls)
-    assert all(isinstance(call["backend"], FilesystemBackend) for call in factory_calls)
+    assert all(
+        isinstance(call["backend"], ReviewFilesystemBackend) for call in factory_calls
+    )
     assert all(call["backend"].cwd == tmp_path.resolve() for call in factory_calls)
     assert all(call["backend"].virtual_mode for call in factory_calls)
     assert all(
@@ -316,6 +320,9 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
     assert all(call["permissions"][0].operations == ["write"] for call in factory_calls)
     assert all(call["permissions"][0].mode == "deny" for call in factory_calls)
     assert all("list_changed_files" in call["system_prompt"] for call in factory_calls)
+    assert all(
+        "repository-root broad glob" in call["system_prompt"] for call in factory_calls
+    )
     assert all(
         "call them in parallel in the same assistant message" in call["system_prompt"]
         for call in factory_calls

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import threading
+import time
 from contextvars import ContextVar
+
+import pytest
 
 from review_sheep import (
     Confidence,
@@ -74,3 +77,41 @@ def test_custom_lenses_run_concurrently_after_built_ins_in_declaration_order() -
         "api-compatibility",
         "migration-safety",
     ]
+
+
+def test_lens_concurrency_limits_the_number_of_active_lenses() -> None:
+    active = 0
+    maximum_active = 0
+    lock = threading.Lock()
+
+    def run_lens(lens: Lens) -> list[Finding]:
+        nonlocal active, maximum_active
+        with lock:
+            active += 1
+            maximum_active = max(maximum_active, active)
+        time.sleep(0.01)
+        with lock:
+            active -= 1
+        return [
+            Finding(
+                description=f"Finding from {lens.value}.",
+                location=Location(),
+                severity=Severity.LOW,
+                confidence=Confidence.CONFIRMED,
+                lens=lens,
+            )
+        ]
+
+    findings = run_lenses_in_parallel(run_lens, lens_concurrency=1)
+
+    assert len(findings) == len(Lens)
+    assert maximum_active == 1
+
+
+@pytest.mark.parametrize("value", [0, -1, True])
+def test_lens_concurrency_requires_a_positive_integer(value: object) -> None:
+    with pytest.raises(ValueError, match="positive integer"):
+        run_lenses_in_parallel(
+            lambda _: [],
+            lens_concurrency=value,  # type: ignore[arg-type]
+        )

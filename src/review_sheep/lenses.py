@@ -7,7 +7,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextvars import copy_context
 from functools import cache
-from typing import Any, Literal, overload
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, create_model
 
@@ -148,25 +148,15 @@ def _schema_name(identifier: str) -> str:
     return "".join(part.capitalize() for part in identifier.split("-"))
 
 
-@overload
-def run_lenses_in_parallel(
-    run_lens: Callable[[Lens], list[Finding]],
-) -> list[Finding]: ...
-
-
-@overload
-def run_lenses_in_parallel(
-    run_lens: Callable[[ReviewLens], list[Finding]],
-    custom_lenses: Sequence[CustomLens],
-) -> list[Finding]: ...
-
-
 def run_lenses_in_parallel(
     run_lens: Callable[[Any], list[Finding]],
     custom_lenses: Sequence[CustomLens] = (),
+    *,
+    lens_concurrency: int | None = None,
 ) -> list[Finding]:
     """Run independent Lenses concurrently and flatten in stable order."""
     lenses: list[ReviewLens] = [*Lens, *validate_custom_lenses(custom_lenses)]
+    max_workers = _resolve_lens_concurrency(lens_concurrency, len(lenses))
     logger.info("lenses.parallel.start count=%d", len(lenses))
 
     def run_one(lens: ReviewLens) -> list[Finding]:
@@ -179,7 +169,7 @@ def run_lenses_in_parallel(
             raise LensExecutionError(lens, error) from error
 
     with ThreadPoolExecutor(
-        max_workers=len(lenses),
+        max_workers=max_workers,
         thread_name_prefix="review-sheep-lens",
     ) as executor:
         futures: list[Future[list[Finding]]] = [
@@ -188,6 +178,14 @@ def run_lenses_in_parallel(
         findings = [finding for future in futures for finding in future.result()]
     logger.info("lenses.parallel.complete findings=%d", len(findings))
     return findings
+
+
+def _resolve_lens_concurrency(value: int | None, lens_count: int) -> int:
+    if value is None:
+        return lens_count
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError("lens_concurrency must be a positive integer")
+    return value
 
 
 def validate_lens_findings(lens: ReviewLens, payload: Any) -> list[Finding]:
