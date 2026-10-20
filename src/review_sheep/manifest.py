@@ -40,6 +40,7 @@ from review_sheep.lenses import (
     lens_identifier,
     lens_result_schema,
     lens_system_prompt,
+    pull_request_description_prompt,
     run_lenses_in_parallel,
     validate_lens_findings,
 )
@@ -157,6 +158,9 @@ class ManifestReviewRunner:
             f"Review {workspace.manifest.repo}#"
             f"{workspace.manifest.pull_request_number} from the Manifest through "
             f"the {identifier} Lens."
+        )
+        request += pull_request_description_prompt(
+            title=workspace.title, body=workspace.body
         )
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
@@ -352,7 +356,12 @@ def _build_workspace(snapshot: PullRequestSnapshot) -> ReviewWorkspace:
         for entry, snapshot_file in zip(entries, snapshot.files, strict=True)
     }
     files["/manifest.json"] = manifest.model_dump_json(indent=2)
-    workspace = ReviewWorkspace(manifest=manifest, files=files)
+    workspace = ReviewWorkspace(
+        manifest=manifest,
+        files=files,
+        title=snapshot.title,
+        body=snapshot.body,
+    )
     logger.info(
         "manifest.workspace.ready repo=%s pr=%d virtual_files=%d",
         manifest.repo,

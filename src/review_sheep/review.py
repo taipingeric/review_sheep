@@ -35,6 +35,7 @@ from review_sheep.lenses import (
     lens_identifier,
     lens_result_schema,
     lens_system_prompt,
+    pull_request_description_prompt,
     run_lenses_in_parallel,
     validate_lens_findings,
 )
@@ -153,6 +154,9 @@ class DeepAgentReviewRunner:
             f"Review {checkout.repo}#{checkout.pull_request_number} from "
             f"{checkout.base_sha}...{checkout.head_sha} through the "
             f"{identifier} Lens."
+        )
+        request += pull_request_description_prompt(
+            title=checkout.title, body=checkout.body
         )
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"

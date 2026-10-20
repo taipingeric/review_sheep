@@ -180,6 +180,8 @@ def _snapshot() -> PullRequestSnapshot:
         number=42,
         base_sha="base123",
         head_sha="head456",
+        title="Swap old for new",
+        body="Replaces the old value.",
         files=[
             SnapshotFile(
                 path="src/example.py",
@@ -237,8 +239,13 @@ def test_manifest_review_runs_every_lens_over_the_same_virtual_files(
             {path: data["content"] for path, data in state["files"].items()}
         )
         assert "Focus on regressions." in state["messages"][0]["content"]
+        assert (
+            "<pr_description>\nTitle: Swap old for new\n\nReplaces the old value.\n"
+            "</pr_description>" in state["messages"][0]["content"]
+        )
     assert snapshots[0] == snapshots[1] == snapshots[2]
     assert '"base_sha": "base123"' in snapshots[0]["/manifest.json"]
+    assert "Replaces the old value." not in snapshots[0]["/manifest.json"]
 
 
 def test_manifest_review_exposes_caller_tools_to_every_lens(

@@ -9,6 +9,8 @@ from review_sheep.domain import PullRequestRevision, PullRequestSnapshot, Snapsh
 
 logger = logging.getLogger(__name__)
 
+_REVIEW_BODY_CHARACTERS = 4000
+
 
 class GitHubPullRequestReader:
     """Adapt PyGithub to metadata reads and pull-request revisions."""
@@ -134,6 +136,8 @@ class GitHubPullRequestReader:
             number=number,
             base_sha=pull.base.sha,
             head_sha=pull.head.sha,
+            title=pull.title or "",
+            body=(pull.body or "")[:_REVIEW_BODY_CHARACTERS],
         )
         logger.info(
             "github.get_revision.complete repo=%s pr=%d base=%s head=%s",
@@ -170,6 +174,8 @@ class GitHubPullRequestReader:
             number=number,
             base_sha=base_sha,
             head_sha=head_sha,
+            title=pull.title or "",
+            body=(pull.body or "")[:_REVIEW_BODY_CHARACTERS],
             files=[
                 SnapshotFile(
                     path=changed.filename,

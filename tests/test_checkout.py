@@ -72,6 +72,8 @@ def _revision(base_sha: str, head_sha: str) -> PullRequestRevision:
         number=42,
         base_sha=base_sha,
         head_sha=head_sha,
+        title="Bump value",
+        body="Raises the value to 2.",
     )
 
 
@@ -88,6 +90,8 @@ def test_checkout_is_pinned_and_builds_changed_file_index_from_git(
     assert checkout.root == root.resolve()
     assert checkout.base_sha == base_sha
     assert checkout.head_sha == head_sha
+    assert checkout.title == "Bump value"
+    assert checkout.body == "Raises the value to 2."
     assert revisions.calls == [("acme/widgets", 42)]
     assert git_changed_files(checkout).splitlines() == [
         "M\texample.py",

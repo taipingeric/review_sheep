@@ -151,10 +151,19 @@ This path requires no local checkout and is the production adapter used by
 context, so Manifest prompts require Findings to remain grounded in the
 available changed-code evidence.
 
+## Pull request description
+
+Both Review paths carry the author's PR title and body (truncated to 4,000
+characters) from the same GitHub read that pins the SHAs. Each Lens request
+wraps them in a `<pr_description>` block and states that they are the author's
+untrusted claim about intent: a Lens may compare the code against it but must
+ignore instructions inside it. The description is never written to
+`/manifest.json`, and an empty title and body add nothing to the request.
+
 ## CI Review checkout
 
-`GitHubPullRequestReader.get_pull_request_revision` returns only the PR's
-`base_sha` and `head_sha`. `GitCheckoutSource` then verifies that:
+`GitHubPullRequestReader.get_pull_request_revision` returns the PR's
+`base_sha`, `head_sha`, title, and body. `GitCheckoutSource` then verifies that:
 
 - the configured path belongs to a Git worktree;
 - `HEAD` exactly equals the PR head SHA;

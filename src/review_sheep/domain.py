@@ -213,6 +213,8 @@ class PullRequestSnapshot(BaseModel):
     number: int = Field(gt=0)
     base_sha: str = Field(min_length=1)
     head_sha: str = Field(min_length=1)
+    title: str = ""
+    body: str = ""
     files: list[SnapshotFile]
 
 
@@ -249,6 +251,8 @@ class ReviewWorkspace(BaseModel):
 
     manifest: Manifest
     files: dict[str, str]
+    title: str = ""
+    body: str = ""
 
 
 class PullRequestRevision(BaseModel):
@@ -260,6 +264,8 @@ class PullRequestRevision(BaseModel):
     number: int = Field(gt=0)
     base_sha: str = Field(min_length=1)
     head_sha: str = Field(min_length=1)
+    title: str = ""
+    body: str = ""
 
 
 class ReviewCheckout(BaseModel):
@@ -272,6 +278,8 @@ class ReviewCheckout(BaseModel):
     base_sha: str = Field(min_length=1)
     head_sha: str = Field(min_length=1)
     root: Path
+    title: str = ""
+    body: str = ""
 
 
 class Review(BaseModel):

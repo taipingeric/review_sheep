@@ -252,7 +252,9 @@ def test_location_rejects_incomplete_or_invalid_line_ranges(
 def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    checkout = _checkout(tmp_path)
+    checkout = _checkout(tmp_path).model_copy(
+        update={"title": "Guard the caller", "body": "Validates input first."}
+    )
     source = FakeCheckoutSource(checkout)
     factory_calls: list[dict[str, Any]] = []
     created_agents: list[FakeLensAgent] = []
@@ -334,6 +336,11 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
     assert all(
         "Focus on authorization regressions."
         in agent.calls[0]["messages"][0]["content"]
+        for agent in created_agents
+    )
+    assert all(
+        "<pr_description>\nTitle: Guard the caller\n\nValidates input first.\n"
+        "</pr_description>" in agent.calls[0]["messages"][0]["content"]
         for agent in created_agents
     )
     assert [finding.lens for finding in result.findings] == list(Lens)
