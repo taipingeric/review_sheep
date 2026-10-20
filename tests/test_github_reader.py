@@ -243,7 +243,7 @@ def test_reader_returns_pull_request_base_and_head_revisions() -> None:
         title="Keep the flock together",
         body="Fixes the gate latch.",
         base=SimpleNamespace(sha="base123"),
-        head=SimpleNamespace(sha="abc123"),
+        head=SimpleNamespace(sha="abc123", ref="flock-gate"),
     )
     repository = FakeRepository([], pull_details=pull)
     client = FakeGithubClient(repository)
@@ -259,23 +259,24 @@ def test_reader_returns_pull_request_base_and_head_revisions() -> None:
         head_sha="abc123",
         title="Keep the flock together",
         body="Fixes the gate latch.",
+        head_ref="flock-gate",
     )
 
 
-def test_reader_truncates_long_review_bodies_and_defaults_missing_text() -> None:
+def test_reader_keeps_the_full_review_body_and_defaults_missing_text() -> None:
     long_pull = SimpleNamespace(
         number=42,
         title="Long",
         body="x" * 5000,
         base=SimpleNamespace(sha="base123"),
-        head=SimpleNamespace(sha="abc123"),
+        head=SimpleNamespace(sha="abc123", ref="flock-gate"),
     )
     empty_pull = SimpleNamespace(
         number=42,
         title=None,
         body=None,
         base=SimpleNamespace(sha="base123"),
-        head=SimpleNamespace(sha="abc123"),
+        head=SimpleNamespace(sha="abc123", ref="flock-gate"),
     )
 
     long_revision = GitHubPullRequestReader(
@@ -287,7 +288,7 @@ def test_reader_truncates_long_review_bodies_and_defaults_missing_text() -> None
         default_repo="acme/widgets",
     ).get_pull_request_revision(repo="", number=42)
 
-    assert long_revision.body == "x" * 4000
+    assert long_revision.body == "x" * 5000
     assert (empty_revision.title, empty_revision.body) == ("", "")
 
 
@@ -305,7 +306,7 @@ def test_reader_fetches_one_stable_manifest_snapshot() -> None:
         title="Keep the flock together",
         body=None,
         base=SimpleNamespace(sha="base123"),
-        head=SimpleNamespace(sha="head456"),
+        head=SimpleNamespace(sha="head456", ref="flock-gate"),
         get_files=lambda: [changed_file],
     )
     repository = FakeRepository([], pull_details=pull)
@@ -323,6 +324,7 @@ def test_reader_fetches_one_stable_manifest_snapshot() -> None:
         base_sha="base123",
         head_sha="head456",
         title="Keep the flock together",
+        head_ref="flock-gate",
         files=[
             SnapshotFile(
                 path="src/example.py",
@@ -339,7 +341,7 @@ def test_reader_rejects_a_snapshot_when_the_pull_request_head_changes() -> None:
     first_pull = SimpleNamespace(
         number=42,
         base=SimpleNamespace(sha="base123"),
-        head=SimpleNamespace(sha="head456"),
+        head=SimpleNamespace(sha="head456", ref="flock-gate"),
         get_files=list,
     )
     second_pull = SimpleNamespace(
@@ -400,7 +402,7 @@ def test_reader_normalizes_missing_patches_to_empty_strings() -> None:
         title="Keep the flock together",
         body=None,
         base=SimpleNamespace(sha="base123"),
-        head=SimpleNamespace(sha="head456"),
+        head=SimpleNamespace(sha="head456", ref="flock-gate"),
         get_files=lambda: [changed_file],
     )
     repository = FakeRepository([], pull_details=pull)

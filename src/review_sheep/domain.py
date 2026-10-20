@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import cast
@@ -91,6 +91,43 @@ def validate_custom_lenses(lenses: Sequence[CustomLens]) -> tuple[CustomLens, ..
     if len(identifiers) != len(set(identifiers)):
         raise ValueError("custom Lens identifiers must not be duplicate")
     return frozen_lenses
+
+
+class PullRequestContext(BaseModel):
+    """What a Review Context provider may read about the pull request."""
+
+    model_config = ConfigDict(frozen=True)
+
+    repo: str
+    number: int = Field(gt=0)
+    base_sha: str = Field(min_length=1)
+    head_sha: str = Field(min_length=1)
+    title: str = ""
+    body: str = ""
+    head_ref: str = ""
+
+
+class ReviewContext(BaseModel):
+    """Caller-provided background fetched once per Review for every Lens."""
+
+    model_config = ConfigDict(frozen=True)
+
+    identifier: str = Field(
+        min_length=1,
+        pattern=_CUSTOM_LENS_IDENTIFIER_PATTERN,
+    )
+    fetch: Callable[[PullRequestContext], str]
+
+
+def validate_review_contexts(
+    contexts: Sequence[ReviewContext],
+) -> tuple[ReviewContext, ...]:
+    """Validate and freeze an ordered collection of Review Contexts."""
+    frozen_contexts = tuple(contexts)
+    identifiers = [context.identifier for context in frozen_contexts]
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("Review Context identifiers must not be duplicate")
+    return frozen_contexts
 
 
 class ReviewOperation(str, Enum):
@@ -215,6 +252,7 @@ class PullRequestSnapshot(BaseModel):
     head_sha: str = Field(min_length=1)
     title: str = ""
     body: str = ""
+    head_ref: str = ""
     files: list[SnapshotFile]
 
 
@@ -253,6 +291,7 @@ class ReviewWorkspace(BaseModel):
     files: dict[str, str]
     title: str = ""
     body: str = ""
+    head_ref: str = ""
 
 
 class PullRequestRevision(BaseModel):
@@ -266,6 +305,7 @@ class PullRequestRevision(BaseModel):
     head_sha: str = Field(min_length=1)
     title: str = ""
     body: str = ""
+    head_ref: str = ""
 
 
 class ReviewCheckout(BaseModel):
@@ -280,6 +320,7 @@ class ReviewCheckout(BaseModel):
     root: Path
     title: str = ""
     body: str = ""
+    head_ref: str = ""
 
 
 class Review(BaseModel):

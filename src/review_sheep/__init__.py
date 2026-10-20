@@ -15,6 +15,14 @@ from review_sheep.checkout import (
     git_diff,
 )
 from review_sheep.config import ChatConfig, CIConfig, LangfuseConfig, MLflowConfig
+from review_sheep.context_providers import (
+    JIRA_ISSUE_URL_PATTERN,
+    NOTION_PAGE_PATTERN,
+    find_references,
+    jira_issue_context,
+    linked_reference_context,
+    notion_page_context,
+)
 from review_sheep.domain import (
     ChatIntent,
     Confidence,
@@ -27,17 +35,20 @@ from review_sheep.domain import (
     Location,
     Manifest,
     ManifestFile,
+    PullRequestContext,
     PullRequestRevision,
     PullRequestSnapshot,
     Report,
     Review,
     ReviewCheckout,
+    ReviewContext,
     ReviewError,
     ReviewOperation,
     ReviewWorkspace,
     Severity,
     SnapshotFile,
     validate_custom_lenses,
+    validate_review_contexts,
 )
 from review_sheep.github import GitHubPullRequestReader
 from review_sheep.inquiry import (
@@ -68,6 +79,8 @@ from review_sheep.tools import review_pull_request_tool
 __version__ = "0.1.1"
 
 __all__ = [
+    "JIRA_ISSUE_URL_PATTERN",
+    "NOTION_PAGE_PATTERN",
     "CIConfig",
     "CachedGitCheckoutSource",
     "ChatConfig",
@@ -95,6 +108,7 @@ __all__ = [
     "ManifestReviewAgent",
     "ManifestReviewRunner",
     "ManifestRunner",
+    "PullRequestContext",
     "PullRequestReader",
     "PullRequestRevision",
     "PullRequestRevisionSource",
@@ -106,6 +120,7 @@ __all__ = [
     "ReviewAgent",
     "ReviewCheckout",
     "ReviewCheckoutSource",
+    "ReviewContext",
     "ReviewError",
     "ReviewOperation",
     "ReviewRunner",
@@ -119,9 +134,14 @@ __all__ = [
     "create_intent_classifier",
     "create_manifest_review_agent",
     "create_review_agent",
+    "find_references",
     "git_changed_files",
     "git_diff",
+    "jira_issue_context",
+    "linked_reference_context",
+    "notion_page_context",
     "render_report",
     "review_pull_request_tool",
     "validate_custom_lenses",
+    "validate_review_contexts",
 ]

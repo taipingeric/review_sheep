@@ -18,8 +18,10 @@ from review_sheep import (
     Finding,
     Lens,
     ManifestReviewAgent,
+    PullRequestContext,
     PullRequestSnapshot,
     Review,
+    ReviewContext,
     ReviewError,
     ReviewOperation,
     ReviewWorkspace,
@@ -569,3 +571,47 @@ def test_manifest_is_built_dynamically_for_each_requested_repository() -> None:
         42,
     ]
     assert runner.workspaces[0].manifest is not runner.workspaces[1].manifest
+
+
+def test_manifest_review_fetches_context_once_and_shares_it_with_every_lens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot = _snapshot().model_copy(update={"head_ref": "swap-values"})
+    seen: list[PullRequestContext] = []
+    agents: list[FakeLensAgent] = []
+
+    def fetch_notion(pull_request: PullRequestContext) -> str:
+        seen.append(pull_request)
+        return "Spec: swap old for new."
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        return _fake_lens_agent(kwargs["response_format"].schema, agents)
+
+    monkeypatch.setattr(manifest_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_manifest_review_agent(
+        source=FakeSnapshotSource(snapshot),
+        model="openai:gpt-test",
+        context_providers=[ReviewContext(identifier="notion", fetch=fetch_notion)],
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert seen == [
+        PullRequestContext(
+            repo="acme/widgets",
+            number=42,
+            base_sha="base123",
+            head_sha="head456",
+            title="Swap old for new",
+            body="Replaces the old value.",
+            head_ref="swap-values",
+        )
+    ]
+    assert len(agents) == len(Lens)
+    for agent in agents:
+        state = agent.calls[0]
+        assert (
+            '<caller_context name="notion">\nSpec: swap old for new.\n'
+            "</caller_context>" in state["messages"][0]["content"]
+        )
+        assert "Spec: swap old for new." not in state["files"]["/manifest.json"]

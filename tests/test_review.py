@@ -21,9 +21,11 @@ from review_sheep import (
     Finding,
     Lens,
     Location,
+    PullRequestContext,
     RepositoryMirrorLockTimeout,
     Review,
     ReviewCheckout,
+    ReviewContext,
     ReviewError,
     ReviewOperation,
     Severity,
@@ -763,3 +765,59 @@ def test_review_returns_diff_failure_as_explainable_data(
         error_type="RuntimeError",
         message="diff unavailable for all files",
     )
+
+
+def test_deep_review_fetches_context_once_and_shares_it_with_every_lens(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    checkout = _checkout(tmp_path).model_copy(
+        update={"title": "ABC-1 Lock the gate", "head_ref": "abc-1-gate"}
+    )
+    seen: list[PullRequestContext] = []
+    agents: list[FakeLensAgent] = []
+
+    def fetch_jira(pull_request: PullRequestContext) -> str:
+        seen.append(pull_request)
+        return "ABC-1: The gate must lock."
+
+    def fake_create_deep_agent(**kwargs: Any) -> FakeLensAgent:
+        agent = FakeLensAgent({}, structured_response={"findings": []})
+        agents.append(agent)
+        return agent
+
+    monkeypatch.setattr(review_module, "_create_deep_agent", fake_create_deep_agent)
+
+    result = create_deep_review_agent(
+        source=FakeCheckoutSource(checkout),
+        model="openai:gpt-test",
+        context_providers=[ReviewContext(identifier="jira", fetch=fetch_jira)],
+    ).review(repo="acme/widgets", number=42)
+
+    assert isinstance(result, Review)
+    assert seen == [
+        PullRequestContext(
+            repo="acme/widgets",
+            number=42,
+            base_sha="base123",
+            head_sha="head456",
+            title="ABC-1 Lock the gate",
+            head_ref="abc-1-gate",
+        )
+    ]
+    assert len(agents) == len(Lens)
+    assert all(
+        '<caller_context name="jira">\nABC-1: The gate must lock.\n'
+        "</caller_context>" in agent.calls[0]["messages"][0]["content"]
+        for agent in agents
+    )
+
+
+def test_deep_review_rejects_duplicate_review_contexts() -> None:
+    context = ReviewContext(identifier="jira", fetch=lambda _: "")
+
+    with pytest.raises(ValueError, match="must not be duplicate"):
+        create_deep_review_agent(
+            source=FakeCheckoutSource(_checkout(Path("."))),
+            model="openai:gpt-test",
+            context_providers=[context, context],
+        )

@@ -65,6 +65,12 @@ One Manifest and its in-memory virtual diff files. It is the changed-code input
 used by Chat Review when no Review Checkout exists.
 _Avoid_: checkout, worktree, repository
 
+**Review Context**:
+Caller-provided background text, such as a linked ticket or spec, fetched once
+per Review before any Lens starts and shared with every Lens as untrusted
+context. It describes intent and is never evidence for a Finding on its own.
+_Avoid_: enrichment, attachment, plugin
+
 **Inquiry**:
 A question about pull requests answered from GitHub metadata alone, producing no
 Findings. Distinct from a Review, which examines changed code.

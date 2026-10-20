@@ -23,12 +23,15 @@ from review_sheep.domain import (
     Finding,
     Manifest,
     ManifestFile,
+    PullRequestContext,
     PullRequestSnapshot,
     Review,
+    ReviewContext,
     ReviewError,
     ReviewOperation,
     ReviewWorkspace,
     validate_custom_lenses,
+    validate_review_contexts,
 )
 from review_sheep.lenses import (
     PARALLEL_TOOL_USE_PROMPT,
@@ -41,6 +44,7 @@ from review_sheep.lenses import (
     lens_result_schema,
     lens_system_prompt,
     pull_request_description_prompt,
+    review_context_prompt,
     run_lenses_in_parallel,
     validate_lens_findings,
 )
@@ -100,12 +104,14 @@ class ManifestReviewRunner:
         tools: Sequence[BaseTool] = (),
         custom_lenses: Sequence[CustomLens] = (),
         lens_concurrency: int | None = None,
+        context_providers: Sequence[ReviewContext] = (),
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
         self._tools = tuple(tools)
         self._custom_lenses = validate_custom_lenses(custom_lenses)
         self._lens_concurrency = lens_concurrency
+        self._contexts = validate_review_contexts(context_providers)
 
     def run(
         self,
@@ -121,8 +127,13 @@ class ManifestReviewRunner:
             len(workspace.manifest.files),
         )
         effective_config = ensure_config(config)
+        caller_context = review_context_prompt(
+            self._contexts, _pull_request_context(workspace)
+        )
         findings = run_lenses_in_parallel(
-            lambda lens: self._run_lens(lens, workspace, config=effective_config),
+            lambda lens: self._run_lens(
+                lens, workspace, caller_context, config=effective_config
+            ),
             self._custom_lenses,
             lens_concurrency=self._lens_concurrency,
         )
@@ -133,6 +144,7 @@ class ManifestReviewRunner:
         self,
         lens: ReviewLens,
         workspace: ReviewWorkspace,
+        caller_context: str,
         *,
         config: RunnableConfig | None = None,
     ) -> list[Finding]:
@@ -162,6 +174,7 @@ class ManifestReviewRunner:
         request += pull_request_description_prompt(
             title=workspace.title, body=workspace.body
         )
+        request += caller_context
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
         state = cast(
@@ -331,6 +344,19 @@ def _review_error(
     )
 
 
+def _pull_request_context(workspace: ReviewWorkspace) -> PullRequestContext:
+    manifest = workspace.manifest
+    return PullRequestContext(
+        repo=manifest.repo,
+        number=manifest.pull_request_number,
+        base_sha=manifest.base_sha,
+        head_sha=manifest.head_sha,
+        title=workspace.title,
+        body=workspace.body,
+        head_ref=workspace.head_ref,
+    )
+
+
 def _build_workspace(snapshot: PullRequestSnapshot) -> ReviewWorkspace:
     entries = [
         ManifestFile(
@@ -361,6 +387,7 @@ def _build_workspace(snapshot: PullRequestSnapshot) -> ReviewWorkspace:
         files=files,
         title=snapshot.title,
         body=snapshot.body,
+        head_ref=snapshot.head_ref,
     )
     logger.info(
         "manifest.workspace.ready repo=%s pr=%d virtual_files=%d",
@@ -381,6 +408,7 @@ def create_manifest_review_agent(
     tools: Sequence[BaseTool] = (),
     custom_lenses: Sequence[CustomLens] = (),
     lens_concurrency: int | None = None,
+    context_providers: Sequence[ReviewContext] = (),
 ) -> ManifestReviewAgent:
     """Create the production Manifest Review workflow used by Chat."""
     return ManifestReviewAgent(
@@ -391,5 +419,6 @@ def create_manifest_review_agent(
             tools=tools,
             custom_lenses=custom_lenses,
             lens_concurrency=lens_concurrency,
+            context_providers=context_providers,
         ),
     )

@@ -334,6 +334,72 @@ carry credentials themselves; inject credentials only through caller-owned tools
 with the authorization and secret-handling policy appropriate for your
 application.
 
+### Add caller-provided Review Context
+
+A Review Context gives every Lens background the pull request itself does not
+contain, such as a linked Jira ticket or Notion spec. Unlike a tool, it runs
+once per Review, before any Lens starts, and its text is shared by every Lens.
+Review Sheep owns no Jira or Notion client: you supply the function that
+fetches the text, along with its credentials and authorization.
+
+```python
+from review_sheep import (
+    PullRequestContext,
+    ReviewContext,
+    create_deep_review_agent,
+    jira_issue_context,
+    notion_page_context,
+)
+
+def fetch_jira_issue(key: str) -> str:
+    issue = jira_client.issue(key)
+    return f"{issue.fields.summary}\n\n{issue.fields.description or ''}"
+
+def fetch_notion_page(page_id: str) -> str:
+    return my_notion_page_to_text(notion_client, page_id)
+
+def fetch_release_notes(pull_request: PullRequestContext) -> str:
+    return release_notes_for(pull_request.repo, pull_request.head_ref)
+
+reviewer = create_deep_review_agent(
+    source=checkout,
+    model=model,
+    context_providers=[
+        jira_issue_context(fetch_jira_issue, project_keys=["STRAITSX"]),
+        notion_page_context(fetch_notion_page),
+        ReviewContext(identifier="release-notes", fetch=fetch_release_notes),
+    ],
+)
+```
+
+- `ReviewContext(identifier=..., fetch=...)` is the base contract. `fetch`
+  receives a `PullRequestContext` (repo, number, base/head SHA, title, body,
+  and head branch) and returns text. Identifiers use the same kebab-case rule as
+  custom Lenses and must be unique.
+- `linked_reference_context` finds every match of `pattern` in the PR title,
+  body, and head branch, then calls `fetch` once per unique reference, up to
+  `max_references` (default 5). A pattern with a capturing group passes the
+  first group.
+- `jira_issue_context` matches Jira Cloud links such as
+  `https://acme.atlassian.net/browse/STRAITSX-30185` (and `selectedIssue=`
+  board links). Bare keys such as `STRAITSX-30185` or a branch named
+  `straitsx-30185-fix` match only for the listed `project_keys`, so text like
+  `UTF-8` is never treated as a ticket. `fetch_issue` receives the upper-case
+  key. For self-hosted Jira, use `linked_reference_context` with your own
+  pattern.
+- `notion_page_context` does the same for `notion.so` and `notion.site` links
+  and passes `fetch_page` a lower-case 32-character page ID.
+- Neither helper calls the Jira or Notion API; your fetch function does.
+
+`create_manifest_review_agent` accepts the same `context_providers` argument.
+Each Review Context result is truncated to 8,000 characters and wrapped in a
+`<caller_context>` block marked as untrusted, so Lenses use it as background
+about intent but ignore instructions inside it. A context that raises or returns
+blank text is logged and skipped; the Review still runs. The bundled CLI and
+GitHub Action do not take Python callables, so pass Review Context through your
+own entrypoint, for example a `reviewer_factory` that calls
+`create_deep_review_agent(..., context_providers=[...])`.
+
 Custom Lens output is validated against the standard `Finding` fields and is
 returned unmerged after the built-in Findings, in the declaration order supplied
 to `custom_lenses`. The same identity appears in the `Review`, rendered Report,

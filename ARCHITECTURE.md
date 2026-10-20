@@ -112,6 +112,7 @@ virtual `/diffs/<path>.diff` file per changed path.
 | `checkout.py` | Validate a fixed Git checkout and provide read-only diff operations. |
 | `manifest.py` | Build API snapshots into a Manifest and run the Chat Review LangGraph. |
 | `lenses.py` | Define shared Lens prompts and structured Finding contracts. |
+| `context_providers.py` | Build Review Contexts from links in the PR, leaving every external client to the caller. |
 | `review.py` | Compile fixed-checkout Review and run its deep Lens agents. |
 | `github.py` | Adapt PyGithub to metadata, revisions, and stable patch snapshots. |
 | `domain.py` | Define frozen public data contracts. |
@@ -153,12 +154,24 @@ available changed-code evidence.
 
 ## Pull request description
 
-Both Review paths carry the author's PR title and body (truncated to 4,000
-characters) from the same GitHub read that pins the SHAs. Each Lens request
-wraps them in a `<pr_description>` block and states that they are the author's
-untrusted claim about intent: a Lens may compare the code against it but must
-ignore instructions inside it. The description is never written to
+Both Review paths carry the author's full PR title and body, untruncated, from
+the same GitHub read that pins the SHAs, so Review Context providers search the
+whole description. Each Lens request wraps them in a `<pr_description>` block
+and states that they are the author's untrusted claim about intent: a Lens may
+compare the code against it but must ignore instructions inside it. The description is never written to
 `/manifest.json`, and an empty title and body add nothing to the request.
+
+## Review Context
+
+Both Review runners accept `context_providers`, an ordered list of
+`ReviewContext` values. Before the Lenses start, the runner builds one
+`PullRequestContext` from the checkout or workspace and calls each provider
+once, in order. Non-blank results are truncated to 8,000 characters and wrapped
+in `<caller_context name="...">` blocks after the PR description; a raising or
+blank provider is logged and skipped so external outages never fail the Review.
+`context_providers.py` adds `linked_reference_context`, `jira_issue_context`,
+and `notion_page_context`, which only find references in the PR title, body, and
+head branch and hand them to caller-owned fetch functions.
 
 ## CI Review checkout
 

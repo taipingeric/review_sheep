@@ -22,11 +22,14 @@ from review_sheep.checkout import git_changed_files, git_diff
 from review_sheep.domain import (
     CustomLens,
     Finding,
+    PullRequestContext,
     Review,
     ReviewCheckout,
+    ReviewContext,
     ReviewError,
     ReviewOperation,
     validate_custom_lenses,
+    validate_review_contexts,
 )
 from review_sheep.lenses import (
     PARALLEL_TOOL_USE_PROMPT,
@@ -36,6 +39,7 @@ from review_sheep.lenses import (
     lens_result_schema,
     lens_system_prompt,
     pull_request_description_prompt,
+    review_context_prompt,
     run_lenses_in_parallel,
     validate_lens_findings,
 )
@@ -92,12 +96,14 @@ class DeepAgentReviewRunner:
         tools: Sequence[BaseTool] = (),
         custom_lenses: Sequence[CustomLens] = (),
         lens_concurrency: int | None = None,
+        context_providers: Sequence[ReviewContext] = (),
     ) -> None:
         self._model = model
         self._instructions = instructions.strip()
         self._tools = tuple(tools)
         self._custom_lenses = validate_custom_lenses(custom_lenses)
         self._lens_concurrency = lens_concurrency
+        self._contexts = validate_review_contexts(context_providers)
 
     def run(
         self,
@@ -114,8 +120,13 @@ class DeepAgentReviewRunner:
             checkout.head_sha,
         )
         effective_config = ensure_config(config)
+        caller_context = review_context_prompt(
+            self._contexts, _pull_request_context(checkout)
+        )
         findings = run_lenses_in_parallel(
-            lambda lens: self._run_lens(lens, checkout, config=effective_config),
+            lambda lens: self._run_lens(
+                lens, checkout, caller_context, config=effective_config
+            ),
             self._custom_lenses,
             lens_concurrency=self._lens_concurrency,
         )
@@ -126,6 +137,7 @@ class DeepAgentReviewRunner:
         self,
         lens: ReviewLens,
         checkout: ReviewCheckout,
+        caller_context: str,
         *,
         config: RunnableConfig | None = None,
     ) -> list[Finding]:
@@ -158,6 +170,7 @@ class DeepAgentReviewRunner:
         request += pull_request_description_prompt(
             title=checkout.title, body=checkout.body
         )
+        request += caller_context
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
         state = cast(Any, {"messages": [{"role": "user", "content": request}]})
@@ -192,6 +205,18 @@ def _checkout_tools(checkout: ReviewCheckout) -> list[BaseTool]:
         return git_diff(checkout, path=normalized) or "No diff for that path."
 
     return [list_changed_files, get_diff]
+
+
+def _pull_request_context(checkout: ReviewCheckout) -> PullRequestContext:
+    return PullRequestContext(
+        repo=checkout.repo,
+        number=checkout.pull_request_number,
+        base_sha=checkout.base_sha,
+        head_sha=checkout.head_sha,
+        title=checkout.title,
+        body=checkout.body,
+        head_ref=checkout.head_ref,
+    )
 
 
 def _normalize_repo_path(path: str) -> str:
@@ -342,6 +367,7 @@ def create_deep_review_agent(
     tools: Sequence[BaseTool] = (),
     custom_lenses: Sequence[CustomLens] = (),
     lens_concurrency: int | None = None,
+    context_providers: Sequence[ReviewContext] = (),
 ) -> ReviewAgent:
     """Create the production Review workflow with one deep agent per Lens."""
     return create_review_agent(
@@ -352,5 +378,6 @@ def create_deep_review_agent(
             tools=tools,
             custom_lenses=custom_lenses,
             lens_concurrency=lens_concurrency,
+            context_providers=context_providers,
         ),
     )

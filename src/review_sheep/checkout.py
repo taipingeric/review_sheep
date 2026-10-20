@@ -724,6 +724,7 @@ def _validate_checkout(*, root: Path, revision: PullRequestRevision) -> ReviewCh
         root=resolved_root,
         title=revision.title,
         body=revision.body,
+        head_ref=revision.head_ref,
     )
 
 
