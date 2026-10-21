@@ -472,7 +472,7 @@ export GITHUB_TOKEN="<read-only-github-token>"
 export OPENAI_MODEL="<model-id>"
 export OPENAI_API_KEY="<provider-api-key>"
 export REVIEW_LOG_LEVEL="INFO"
-# Optional: export REVIEW_LENS_CONCURRENCY="3"
+# Optional: export REVIEW_LENS_CONCURRENCY="4"
 # Optional: export BASE_URL="<compatible-endpoint>/v1"
 uv run python scripts/review_chat.py
 ```
