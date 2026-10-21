@@ -31,7 +31,6 @@ ReviewLens = Lens | CustomLens
 
 _DESCRIPTION_CLOSING_TAG = "</pr_description>"
 _CONTEXT_CLOSING_TAG = "</caller_context>"
-_CONTEXT_CHARACTERS = 8000
 
 
 class LensExecutionError(RuntimeError):
@@ -151,7 +150,7 @@ def review_context_prompt(
     blocks: list[str] = []
     for context in contexts:
         try:
-            text = context.fetch(pull_request).strip()[:_CONTEXT_CHARACTERS]
+            text = context.fetch(pull_request).strip()[: context.max_characters]
         except Exception:
             logger.exception("review.context.failed context=%s", context.identifier)
             continue

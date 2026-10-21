@@ -231,3 +231,41 @@ def test_jira_issue_context_matches_bare_keys_for_listed_projects() -> None:
 def test_jira_issue_context_rejects_an_invalid_project_key() -> None:
     with pytest.raises(ValueError, match="invalid Jira project key"):
         jira_issue_context(str, project_keys=["STRAITS X"])
+
+
+def test_context_prompt_uses_each_contexts_own_character_limit() -> None:
+    prompt = review_context_prompt(
+        [
+            ReviewContext(
+                identifier="jira", fetch=lambda _: "j" * 50, max_characters=10
+            ),
+            ReviewContext(
+                identifier="notion", fetch=lambda _: "n" * 9000, max_characters=None
+            ),
+        ],
+        _pull_request(),
+    )
+
+    assert "j" * 10 + "\n</caller_context>" in prompt
+    assert "j" * 11 not in prompt
+    assert "n" * 9000 + "\n</caller_context>" in prompt
+
+
+@pytest.mark.parametrize("value", [0, -1, True, "100", 1.5])
+def test_review_context_requires_a_positive_integer_character_limit(
+    value: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        ReviewContext(identifier="jira", fetch=lambda _: "", max_characters=value)  # type: ignore[arg-type]
+
+
+def test_helpers_pass_their_character_limit_to_the_review_context() -> None:
+    assert ReviewContext(identifier="jira", fetch=str).max_characters == 8000
+    assert jira_issue_context(str, max_characters=300).max_characters == 300
+    assert notion_page_context(str, max_characters=None).max_characters is None
+    assert (
+        linked_reference_context(
+            identifier="tickets", pattern=r"#\d+", fetch=str, max_characters=50
+        ).max_characters
+        == 50
+    )

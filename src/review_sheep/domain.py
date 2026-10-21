@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 _CUSTOM_LENS_IDENTIFIER_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 _CUSTOM_LENS_IDENTIFIER_RE = re.compile(_CUSTOM_LENS_IDENTIFIER_PATTERN)
+DEFAULT_REVIEW_CONTEXT_CHARACTERS = 8000
 
 
 class Severity(str, Enum):
@@ -117,6 +118,9 @@ class ReviewContext(BaseModel):
         pattern=_CUSTOM_LENS_IDENTIFIER_PATTERN,
     )
     fetch: Callable[[PullRequestContext], str]
+    max_characters: int | None = Field(
+        default=DEFAULT_REVIEW_CONTEXT_CHARACTERS, gt=0, strict=True
+    )
 
 
 def validate_review_contexts(

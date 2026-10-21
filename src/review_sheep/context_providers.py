@@ -6,7 +6,11 @@ import logging
 import re
 from collections.abc import Callable, Sequence
 
-from review_sheep.domain import PullRequestContext, ReviewContext
+from review_sheep.domain import (
+    DEFAULT_REVIEW_CONTEXT_CHARACTERS,
+    PullRequestContext,
+    ReviewContext,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -55,12 +59,14 @@ def linked_reference_context(
     fetch: Callable[[str], str],
     max_references: int = 5,
     normalize: Callable[[str], str] | None = None,
+    max_characters: int | None = DEFAULT_REVIEW_CONTEXT_CHARACTERS,
 ) -> ReviewContext:
     """Build a Review Context that fetches each reference linked from the PR.
 
     The caller owns ``fetch``, including its client, credentials, and
     authorization. A failing or empty reference is skipped so the others still
-    reach every Lens.
+    reach every Lens. ``max_characters`` caps the combined text of all
+    references; ``None`` keeps all of it.
     """
     if (
         isinstance(max_references, bool)
@@ -88,7 +94,9 @@ def linked_reference_context(
                 sections.append(f"## {reference}\n{text}")
         return "\n\n".join(sections)
 
-    return ReviewContext(identifier=identifier, fetch=collect)
+    return ReviewContext(
+        identifier=identifier, fetch=collect, max_characters=max_characters
+    )
 
 
 def notion_page_context(
@@ -96,6 +104,7 @@ def notion_page_context(
     *,
     identifier: str = "notion",
     max_pages: int = 5,
+    max_characters: int | None = DEFAULT_REVIEW_CONTEXT_CHARACTERS,
 ) -> ReviewContext:
     """Build a Review Context from Notion page links in the PR.
 
@@ -108,6 +117,7 @@ def notion_page_context(
         fetch=fetch_page,
         max_references=max_pages,
         normalize=str.lower,
+        max_characters=max_characters,
     )
 
 
@@ -117,6 +127,7 @@ def jira_issue_context(
     project_keys: Sequence[str] = (),
     identifier: str = "jira",
     max_issues: int = 5,
+    max_characters: int | None = DEFAULT_REVIEW_CONTEXT_CHARACTERS,
 ) -> ReviewContext:
     """Build a Review Context from Jira issues linked in the PR.
 
@@ -139,4 +150,5 @@ def jira_issue_context(
         fetch=fetch_issue,
         max_references=max_issues,
         normalize=str.upper,
+        max_characters=max_characters,
     )

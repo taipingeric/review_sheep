@@ -24,6 +24,7 @@ from review_sheep.context_providers import (
     notion_page_context,
 )
 from review_sheep.domain import (
+    DEFAULT_REVIEW_CONTEXT_CHARACTERS,
     ChatIntent,
     Confidence,
     CustomLens,
@@ -79,6 +80,7 @@ from review_sheep.tools import review_pull_request_tool
 __version__ = "0.2.0"
 
 __all__ = [
+    "DEFAULT_REVIEW_CONTEXT_CHARACTERS",
     "JIRA_ISSUE_URL_PATTERN",
     "NOTION_PAGE_PATTERN",
     "CIConfig",

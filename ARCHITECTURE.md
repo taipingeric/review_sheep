@@ -166,7 +166,8 @@ compare the code against it but must ignore instructions inside it. The descript
 Both Review runners accept `context_providers`, an ordered list of
 `ReviewContext` values. Before the Lenses start, the runner builds one
 `PullRequestContext` from the checkout or workspace and calls each provider
-once, in order. Non-blank results are truncated to 8,000 characters and wrapped
+once, in order. Non-blank results are truncated to each context's
+`max_characters` (default 8,000; `None` disables it) and wrapped
 in `<caller_context name="...">` blocks after the PR description; a raising or
 blank provider is logged and skipped so external outages never fail the Review.
 `context_providers.py` adds `linked_reference_context`, `jira_issue_context`,

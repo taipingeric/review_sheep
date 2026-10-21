@@ -392,7 +392,10 @@ reviewer = create_deep_review_agent(
 - Neither helper calls the Jira or Notion API; your fetch function does.
 
 `create_manifest_review_agent` accepts the same `context_providers` argument.
-Each Review Context result is truncated to 8,000 characters and wrapped in a
+Each Review Context result is truncated to its `max_characters` (default
+`DEFAULT_REVIEW_CONTEXT_CHARACTERS`, 8,000; `None` keeps all of it), which every
+helper also accepts, for example
+`notion_page_context(fetch_notion_page, max_characters=20_000)`. It is wrapped in a
 `<caller_context>` block marked as untrusted, so Lenses use it as background
 about intent but ignore instructions inside it. A context that raises or returns
 blank text is logged and skipped; the Review still runs. The bundled CLI and
