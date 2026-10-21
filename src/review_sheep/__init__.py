@@ -77,7 +77,7 @@ from review_sheep.review import (
 )
 from review_sheep.tools import review_pull_request_tool
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"
 
 __all__ = [
     "DEFAULT_REVIEW_CONTEXT_CHARACTERS",
