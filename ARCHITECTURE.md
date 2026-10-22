@@ -112,6 +112,7 @@ virtual `/diffs/<path>.diff` file per changed path.
 | `checkout.py` | Validate a fixed Git checkout and provide read-only diff operations. |
 | `manifest.py` | Build API snapshots into a Manifest and run the Chat Review LangGraph. |
 | `lenses.py` | Define shared Lens prompts and structured Finding contracts. |
+| `merge.py` | Group same-cause Findings with one structured LLM call and merge each group. |
 | `context_providers.py` | Build Review Contexts from links in the PR, leaving every external client to the caller. |
 | `review.py` | Compile fixed-checkout Review and run its deep Lens agents. |
 | `github.py` | Adapt PyGithub to metadata, revisions, and stable patch snapshots. |
@@ -308,8 +309,10 @@ paths, and the system prompt also prohibits mutation. The custom Git tools use
 argument-vector subprocess calls without a shell and reject parent traversal.
 
 Each Lens has its own Pydantic response model, fixing every Finding to the
-originating Lens. Findings are concatenated without semantic merging or
-deduplication.
+originating Lens. After all Lenses finish, `merge.py` asks the model once for
+groups of Finding indices that share a root cause, then merges each group in
+code: the most severe member's text is kept and `lenses` records every
+reporting Lens. A failed grouping call leaves the Findings unmerged (ADR-0009).
 
 ## Domain contracts
 

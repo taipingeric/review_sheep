@@ -29,6 +29,11 @@ PARALLEL_TOOL_USE_PROMPT = (
 
 ReviewLens = Lens | CustomLens
 
+_FINDING_FORMAT_PROMPT = (
+    " Keep each Finding description to at most three sentences. Cite as evidence "
+    "the exact head-commit path and line range of every line that proves it."
+)
+
 _DESCRIPTION_CLOSING_TAG = "</pr_description>"
 _CONTEXT_CLOSING_TAG = "</caller_context>"
 
@@ -120,12 +125,12 @@ def lens_identifier(lens: ReviewLens) -> str:
 def lens_system_prompt(lens: ReviewLens) -> str:
     """Return the concern-specific system prompt for one Lens."""
     if isinstance(lens, Lens):
-        return LENS_SYSTEM_PROMPTS[lens]
+        return LENS_SYSTEM_PROMPTS[lens] + _FINDING_FORMAT_PROMPT
     return (
         "Plan the Review, then inspect the whole pull request through the "
         f"{lens.identifier} Lens. {lens.instructions} Every output item must use "
         f"the {lens.identifier} lens."
-    )
+    ) + _FINDING_FORMAT_PROMPT
 
 
 def pull_request_description_prompt(*, title: str, body: str) -> str:

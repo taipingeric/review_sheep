@@ -821,3 +821,36 @@ def test_deep_review_rejects_duplicate_review_contexts() -> None:
             model="openai:gpt-test",
             context_providers=[context, context],
         )
+
+
+def test_deep_review_merges_lens_findings_with_the_review_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    finding = {
+        "description": "The caller skips the owner check.",
+        "location": {"path": "src/caller.py", "start_line": 1, "end_line": 1},
+        "severity": "high",
+        "confidence": "likely",
+    }
+    merge_calls: list[tuple[list[Finding], Any]] = []
+
+    def fake_merge(
+        findings: list[Finding], *, model: Any, config: Any
+    ) -> list[Finding]:
+        merge_calls.append((findings, model))
+        return findings[:1]
+
+    monkeypatch.setattr(
+        review_module,
+        "_create_deep_agent",
+        lambda **kwargs: FakeLensAgent(finding),
+    )
+    monkeypatch.setattr(review_module, "merge_findings", fake_merge)
+
+    findings = review_module.DeepAgentReviewRunner(model="openai:gpt-test").run(
+        _checkout(tmp_path)
+    )
+
+    assert [len(calls) for calls, _ in merge_calls] == [len(Lens)]
+    assert merge_calls[0][1] == "openai:gpt-test"
+    assert [item.lens for item in findings] == [Lens.CORRECTNESS]

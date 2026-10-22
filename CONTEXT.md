@@ -11,6 +11,8 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete runtime architecture.
 **Finding**:
 A single problem identified in a pull request, anchored to a location in the
 changed code and carrying a severity. The atomic unit of a Review's output.
+When several Lenses report one root cause, the Review merges them into one
+Finding that lists every reporting Lens.
 _Avoid_: comment, issue, suggestion, remark, nit
 
 **Review**:

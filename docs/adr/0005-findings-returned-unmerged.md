@@ -1,5 +1,7 @@
 # A Review returns every Lens's Findings unmerged
 
+Status: superseded by ADR-0009
+
 Findings from all lenses are returned as-is, each tagged with the Lens that
 produced it, with no deduplication or verification step. The same problem
 surfacing from two lenses appears twice. Merging is a semantic judgement — the

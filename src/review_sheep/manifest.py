@@ -48,6 +48,7 @@ from review_sheep.lenses import (
     run_lenses_in_parallel,
     validate_lens_findings,
 )
+from review_sheep.merge import merge_findings
 from review_sheep.tracing import lens_run_config
 
 logger = logging.getLogger(__name__)
@@ -119,7 +120,7 @@ class ManifestReviewRunner:
         *,
         config: RunnableConfig | None = None,
     ) -> list[Finding]:
-        """Run and concatenate Lens Findings in stable Lens order."""
+        """Run every Lens, then merge Findings that share one root cause."""
         logger.info(
             "manifest.review.start repo=%s pr=%d files=%d",
             workspace.manifest.repo,
@@ -137,6 +138,7 @@ class ManifestReviewRunner:
             self._custom_lenses,
             lens_concurrency=self._lens_concurrency,
         )
+        findings = merge_findings(findings, model=self._model, config=effective_config)
         logger.info("manifest.review.complete findings=%d", len(findings))
         return findings
 

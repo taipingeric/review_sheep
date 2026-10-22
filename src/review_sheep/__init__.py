@@ -28,6 +28,7 @@ from review_sheep.domain import (
     ChatIntent,
     Confidence,
     CustomLens,
+    Evidence,
     Finding,
     InquiryAnswer,
     IntentDecision,
@@ -65,7 +66,7 @@ from review_sheep.manifest import (
     SnapshotSource,
     create_manifest_review_agent,
 )
-from review_sheep.report import render_report
+from review_sheep.report import github_line_url, render_report
 from review_sheep.review import (
     DeepAgentReviewRunner,
     DisposableReviewCheckoutSource,
@@ -92,6 +93,7 @@ __all__ = [
     "CustomLens",
     "DeepAgentReviewRunner",
     "DisposableReviewCheckoutSource",
+    "Evidence",
     "Finding",
     "GitCheckoutSource",
     "GitHubPullRequestReader",
@@ -139,6 +141,7 @@ __all__ = [
     "find_references",
     "git_changed_files",
     "git_diff",
+    "github_line_url",
     "jira_issue_context",
     "linked_reference_context",
     "notion_page_context",

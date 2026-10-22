@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic.json_schema import SkipJsonSchema
+from pydantic_core import PydanticUndefined
 
 _CUSTOM_LENS_IDENTIFIER_PATTERN = r"^[a-z0-9]+(?:-[a-z0-9]+)*$"
 _CUSTOM_LENS_IDENTIFIER_RE = re.compile(_CUSTOM_LENS_IDENTIFIER_PATTERN)
@@ -215,21 +217,72 @@ class Location(BaseModel):
         return self
 
 
+class Evidence(BaseModel):
+    """One cited line range in the head commit that supports a Finding."""
+
+    model_config = ConfigDict(frozen=True)
+
+    location: Location
+    note: str = Field(min_length=1, description="What these lines show.")
+
+    @field_validator("location")
+    @classmethod
+    def require_line_range(cls, value: Location) -> Location:
+        """Evidence must point at exact lines so it can be linked."""
+        if value.start_line is None:
+            raise ValueError("Evidence location requires a path and line range")
+        return value
+
+
 class Finding(BaseModel):
     """One actionable defect reported by a Review."""
 
     model_config = ConfigDict(frozen=True)
 
+    title: str | None = Field(default=None, description="One-sentence headline.")
     description: str
+    evidence: list[Evidence] = Field(
+        default_factory=list,
+        description="Head-commit line ranges that prove the Finding is real.",
+    )
     location: Location
     severity: Severity
     confidence: Confidence
     lens: LensIdentity
+    # Every Lens that reported this root cause; a Lens never fills it itself.
+    lenses: SkipJsonSchema[list[LensIdentity]] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def default_lenses_to_lens(cls, data: object) -> object:
+        """A Finding nobody merged was reported by its own Lens alone."""
+        if not isinstance(data, dict) or data.get("lenses"):
+            return data
+        lens = data.get("lens", cls.model_fields["lens"].default)
+        if lens is PydanticUndefined:
+            return data
+        return {**data, "lenses": [lens]}
 
     @field_validator("lens", mode="before")
     @classmethod
     def validate_lens_identity(cls, value: object) -> LensIdentity:
         return _validate_lens_identity(value)
+
+    @field_validator("lenses", mode="before")
+    @classmethod
+    def validate_lens_identities(cls, value: object) -> object:
+        if not isinstance(value, list | tuple):
+            return value
+        return [_validate_lens_identity(item) for item in value]
+
+    @model_validator(mode="after")
+    def require_lens_in_lenses(self) -> Finding:
+        """Keep the Lens whose wording was kept among the reporting Lenses."""
+        if self.lens not in self.lenses:
+            raise ValueError("Finding lenses must include its lens")
+        if len(self.lenses) != len(set(self.lenses)):
+            raise ValueError("Finding lenses must not be duplicate")
+        return self
 
 
 class SnapshotFile(BaseModel):

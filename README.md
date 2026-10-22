@@ -144,8 +144,12 @@ workflow that verifies one clean local checkout against GitHub's PR base/head
 SHAs. Correctness, security, and conventions-and-tests agents share that fixed
 checkout and run concurrently. They generate diffs from `git diff
 base...head` and read complete source files directly. Findings retain their
-Location, Severity, Confidence, and originating Lens; results are merged in
-stable Lens order and overlapping Findings are not merged.
+Location, Severity, Confidence, and originating Lens, plus an optional one-line
+`title` and a list of `evidence`: head-commit line ranges that prove the
+Finding, each rendered in the Report as a GitHub link to those lines. After every Lens finishes, one extra model call groups
+Findings that share a root cause; each group becomes one Finding that keeps the
+highest Severity and lists every reporting Lens in `lenses`. If that call fails,
+Findings are returned unmerged in stable Lens order.
 
 ```python
 from review_sheep import (
@@ -404,7 +408,7 @@ own entrypoint, for example a `reviewer_factory` that calls
 `create_deep_review_agent(..., context_providers=[...])`.
 
 Custom Lens output is validated against the standard `Finding` fields and is
-returned unmerged after the built-in Findings, in the declaration order supplied
+returned after the built-in Findings, in the declaration order supplied
 to `custom_lenses`. The same identity appears in the `Review`, rendered Report,
 logs, and tracing metadata. If a Lens fails, the Review returns its existing
 `ReviewError` boundary with the failing Lens identity; successful partial results

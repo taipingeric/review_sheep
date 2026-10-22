@@ -43,6 +43,7 @@ from review_sheep.lenses import (
     run_lenses_in_parallel,
     validate_lens_findings,
 )
+from review_sheep.merge import merge_findings
 from review_sheep.tracing import lens_run_config
 
 logger = logging.getLogger(__name__)
@@ -111,7 +112,7 @@ class DeepAgentReviewRunner:
         *,
         config: RunnableConfig | None = None,
     ) -> list[Finding]:
-        """Run and concatenate Lens Findings in stable Lens order."""
+        """Run every Lens, then merge Findings that share one root cause."""
         logger.info(
             "checkout.review.start repo=%s pr=%d base=%s head=%s",
             checkout.repo,
@@ -130,6 +131,7 @@ class DeepAgentReviewRunner:
             self._custom_lenses,
             lens_concurrency=self._lens_concurrency,
         )
+        findings = merge_findings(findings, model=self._model, config=effective_config)
         logger.info("checkout.review.complete findings=%d", len(findings))
         return findings
 
