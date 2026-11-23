@@ -380,6 +380,54 @@ class ReviewCheckout(BaseModel):
     head_ref: str = ""
 
 
+class CriterionVerdict(str, Enum):
+    """Whether the changed code meets one Acceptance Criterion."""
+
+    MET = "met"
+    NOT_MET = "not_met"
+    UNVERIFIED = "unverified"
+
+
+class AcceptanceCriterion(BaseModel):
+    """One checkable condition for the change, with a verdict and its proof."""
+
+    model_config = ConfigDict(frozen=True)
+
+    criterion: str = Field(min_length=1, description="The condition being checked.")
+    verdict: CriterionVerdict
+    evidence: list[Evidence] = Field(
+        default_factory=list,
+        description="Head-commit line ranges that support the verdict.",
+    )
+    note: str = Field(default="", description="Why the verdict holds, in one sentence.")
+
+
+class Decision(BaseModel):
+    """One architectural, behavioural, or technical call the change makes."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str = Field(min_length=1, description="One-sentence headline.")
+    description: str = Field(
+        min_length=1,
+        description="What was chosen, and what was left out or not built.",
+    )
+    evidence: list[Evidence] = Field(default_factory=list)
+
+
+class ReviewBrief(BaseModel):
+    """What a reviewer reads in place of the code: Intent, Criteria, Decisions."""
+
+    model_config = ConfigDict(frozen=True)
+
+    intent: str = Field(
+        default="",
+        description="What the change is for, what is in scope, what is left out.",
+    )
+    acceptance_criteria: list[AcceptanceCriterion] = Field(default_factory=list)
+    decisions: list[Decision] = Field(default_factory=list)
+
+
 class Review(BaseModel):
     """A completed Review: what was reviewed and what was found."""
 
@@ -390,6 +438,12 @@ class Review(BaseModel):
     base_sha: str = Field(min_length=1)
     head_sha: str = Field(min_length=1)
     findings: list[Finding]
+    # Optional; empty unless the Review ran with a brief.
+    intent: str = ""
+    acceptance_criteria: list[AcceptanceCriterion] = Field(default_factory=list)
+    decisions: list[Decision] = Field(default_factory=list)
+    # Empty unless the brief was asked for and failed; then it says why.
+    brief_error: str = ""
 
 
 class ReviewError(BaseModel):

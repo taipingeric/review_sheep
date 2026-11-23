@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Sequence
 from pathlib import PurePosixPath
-from typing import Any, Literal, NotRequired, Protocol, TypedDict, cast
+from typing import Any, NotRequired, Protocol, TypedDict, cast
 
 from deepagents import create_deep_agent as _create_deep_agent
 from deepagents.middleware.filesystem import FilesystemPermission
@@ -18,12 +18,14 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from review_sheep.backends import ReviewFilesystemBackend
+from review_sheep.brief import BRIEF_SYSTEM_PROMPT, verify_brief
 from review_sheep.checkout import git_changed_files, git_diff
 from review_sheep.domain import (
     CustomLens,
     Finding,
     PullRequestContext,
     Review,
+    ReviewBrief,
     ReviewCheckout,
     ReviewContext,
     ReviewError,
@@ -83,6 +85,10 @@ class _ReviewGraphState(TypedDict):
     repo: str
     pull_request_number: int
     checkout: NotRequired[ReviewCheckout]
+    findings: NotRequired[list[Finding]]
+    lens_error: NotRequired[ReviewError]
+    brief: NotRequired[ReviewBrief]
+    brief_error: NotRequired[str]
     result: NotRequired[Review | ReviewError]
 
 
@@ -98,7 +104,9 @@ class DeepAgentReviewRunner:
         custom_lenses: Sequence[CustomLens] = (),
         lens_concurrency: int | None = None,
         context_providers: Sequence[ReviewContext] = (),
+        brief: bool = False,
     ) -> None:
+        self._brief = brief
         self._model = model
         self._instructions = instructions.strip()
         self._tools = tuple(tools)
@@ -135,17 +143,64 @@ class DeepAgentReviewRunner:
         logger.info("checkout.review.complete findings=%d", len(findings))
         return findings
 
-    def _run_lens(
+    @property
+    def brief_enabled(self) -> bool:
+        """Whether Reviews also carry a Review Brief."""
+        return self._brief
+
+    def brief(
         self,
-        lens: ReviewLens,
         checkout: ReviewCheckout,
-        caller_context: str,
         *,
         config: RunnableConfig | None = None,
-    ) -> list[Finding]:
-        identifier = lens_identifier(lens)
-        logger.info("checkout.lens.start lens=%s", identifier)
-        agent = _create_deep_agent(
+    ) -> ReviewBrief:
+        """Write Intent, Acceptance Criteria, and Decisions with one agent.
+
+        The brief agent never sees the Findings, so its verdicts are independent
+        of the Lenses that wrote them.
+        """
+        logger.info("checkout.brief.start")
+        effective_config = ensure_config(config)
+        agent = self._create_agent(
+            checkout,
+            response_format=ReviewBrief,
+            system_prompt=PARALLEL_TOOL_USE_PROMPT
+            + _CHECKOUT_PROMPT
+            + BRIEF_SYSTEM_PROMPT,
+        )
+        request = (
+            f"Write the Review Brief for {checkout.repo}#{checkout.pull_request_number} "
+            f"from {checkout.base_sha}...{checkout.head_sha}."
+        )
+        request += pull_request_description_prompt(
+            title=checkout.title, body=checkout.body
+        )
+        request += review_context_prompt(
+            self._contexts, _pull_request_context(checkout)
+        )
+        if self._instructions:
+            request += f"\n\nCaller instructions:\n{self._instructions}"
+        state = cast(Any, {"messages": [{"role": "user", "content": request}]})
+        with set_config_context(
+            lens_run_config(config=effective_config, lens="brief")
+        ) as context:
+            result = context.run(agent.invoke, state)
+        brief = ReviewBrief.model_validate(result["structured_response"])
+        logger.info(
+            "checkout.brief.complete criteria=%d decisions=%d",
+            len(brief.acceptance_criteria),
+            len(brief.decisions),
+        )
+        return brief
+
+    def _create_agent(
+        self,
+        checkout: ReviewCheckout,
+        *,
+        response_format: type[Any],
+        system_prompt: str,
+    ) -> Any:
+        return _create_deep_agent(
             model=self._model,
             tools=[*_checkout_tools(checkout), *self._tools],
             backend=ReviewFilesystemBackend(
@@ -159,7 +214,23 @@ class DeepAgentReviewRunner:
                     mode="deny",
                 )
             ],
-            response_format=ToolStrategy(lens_result_schema(lens)),
+            response_format=ToolStrategy(response_format),
+            system_prompt=system_prompt,
+        )
+
+    def _run_lens(
+        self,
+        lens: ReviewLens,
+        checkout: ReviewCheckout,
+        caller_context: str,
+        *,
+        config: RunnableConfig | None = None,
+    ) -> list[Finding]:
+        identifier = lens_identifier(lens)
+        logger.info("checkout.lens.start lens=%s", identifier)
+        agent = self._create_agent(
+            checkout,
+            response_format=lens_result_schema(lens),
             system_prompt=(
                 PARALLEL_TOOL_USE_PROMPT + _CHECKOUT_PROMPT + lens_system_prompt(lens)
             ),
@@ -287,46 +358,78 @@ def _create_review_graph(
             }
         return {"checkout": checkout}
 
-    def run_review(state: _ReviewGraphState) -> dict[str, object]:
-        checkout = state["checkout"]
+    def run_lenses(state: _ReviewGraphState) -> dict[str, object]:
         try:
             logger.info("checkout.graph.run_review")
-            findings = runner.run(checkout)
+            findings = runner.run(state["checkout"])
         except Exception as error:
             logger.exception("checkout.graph.run_review.failed")
             return {
-                "result": _review_error(
+                "lens_error": _review_error(
                     state=state,
                     operation=ReviewOperation.RUN_REVIEW,
                     error=error,
                 )
             }
+        return {"findings": findings}
+
+    def write_brief(state: _ReviewGraphState) -> dict[str, object]:
+        brief, brief_error = _run_brief(runner, state["checkout"])
+        return {"brief": brief, "brief_error": brief_error}
+
+    def assemble(state: _ReviewGraphState) -> dict[str, object]:
+        checkout = state["checkout"]
+        try:
+            if "lens_error" in state:
+                return {"result": state["lens_error"]}
+            brief = state["brief"]
+            return {
+                "result": Review(
+                    repo=checkout.repo,
+                    pull_request_number=checkout.pull_request_number,
+                    base_sha=checkout.base_sha,
+                    head_sha=checkout.head_sha,
+                    findings=state["findings"],
+                    **brief.model_dump(),
+                    brief_error=state["brief_error"],
+                )
+            }
         finally:
             _cleanup_checkout(source, checkout)
-        return {
-            "result": Review(
-                repo=checkout.repo,
-                pull_request_number=checkout.pull_request_number,
-                base_sha=checkout.base_sha,
-                head_sha=checkout.head_sha,
-                findings=findings,
-            )
-        }
 
-    def route(state: _ReviewGraphState) -> Literal["continue", "stop"]:
-        return "stop" if "result" in state else "continue"
+    def route(state: _ReviewGraphState) -> list[str]:
+        # Lenses and the brief are independent, so they run in parallel.
+        if "result" in state:
+            return [END]
+        return ["run_lenses", "write_brief"]
 
     graph = StateGraph(_ReviewGraphState)
     graph.add_node("prepare_checkout", prepare_checkout)
-    graph.add_node("run_review", run_review)
+    graph.add_node("run_lenses", run_lenses)
+    graph.add_node("write_brief", write_brief)
+    graph.add_node("assemble", assemble)
     graph.add_edge(START, "prepare_checkout")
-    graph.add_conditional_edges(
-        "prepare_checkout",
-        route,
-        {"continue": "run_review", "stop": END},
-    )
-    graph.add_edge("run_review", END)
+    graph.add_conditional_edges("prepare_checkout", route)
+    graph.add_edge(["run_lenses", "write_brief"], "assemble")
+    graph.add_edge("assemble", END)
     return graph.compile()
+
+
+def _run_brief(
+    runner: ReviewRunner, checkout: ReviewCheckout
+) -> tuple[ReviewBrief, str]:
+    """Ask an opted-in runner for a Review Brief.
+
+    A failure leaves the brief empty and returns the reason, so a reader can
+    tell "failed" from "not asked for".
+    """
+    if not getattr(runner, "brief_enabled", False):
+        return ReviewBrief(), ""
+    try:
+        return verify_brief(cast(Any, runner).brief(checkout), checkout.root), ""
+    except Exception as error:
+        logger.exception("checkout.graph.brief.failed")
+        return ReviewBrief(), f"{type(error).__name__}: {error}"
 
 
 def _cleanup_checkout(source: ReviewCheckoutSource, checkout: ReviewCheckout) -> None:
@@ -370,8 +473,13 @@ def create_deep_review_agent(
     custom_lenses: Sequence[CustomLens] = (),
     lens_concurrency: int | None = None,
     context_providers: Sequence[ReviewContext] = (),
+    brief: bool = False,
 ) -> ReviewAgent:
-    """Create the production Review workflow with one deep agent per Lens."""
+    """Create the production Review workflow with one deep agent per Lens.
+
+    Pass ``brief=True`` to also write Intent, Acceptance Criteria, and Decisions
+    onto the Review with one extra, independent agent.
+    """
     return create_review_agent(
         source=source,
         runner=DeepAgentReviewRunner(
@@ -381,5 +489,6 @@ def create_deep_review_agent(
             custom_lenses=custom_lenses,
             lens_concurrency=lens_concurrency,
             context_providers=context_providers,
+            brief=brief,
         ),
     )

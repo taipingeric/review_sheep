@@ -5,7 +5,15 @@ from __future__ import annotations
 import logging
 from urllib.parse import quote
 
-from review_sheep.domain import Evidence, Finding, Lens, Location, Report, Review
+from review_sheep.domain import (
+    CriterionVerdict,
+    Evidence,
+    Finding,
+    Lens,
+    Location,
+    Report,
+    Review,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +33,7 @@ def render_report(review: Review) -> Report:
         f"Findings: {len(review.findings)}",
         "",
     ]
+    lines.extend(_render_brief(review))
     if not review.findings:
         lines.append("No Findings.")
         return Report(text="\n".join(lines) + "\n")
@@ -46,6 +55,38 @@ def github_line_url(*, repo: str, head_sha: str, location: Location) -> str:
     if location.end_line != location.start_line:
         url += f"-L{location.end_line}"
     return url
+
+
+def _render_brief(review: Review) -> list[str]:
+    """Render Intent, Acceptance Criteria, and Decisions; nothing if absent."""
+    lines: list[str] = []
+    if review.brief_error:
+        lines.extend([f"> ⚠️ Review Brief failed: {review.brief_error}", ""])
+    if review.intent:
+        lines.extend(["## Intent", "", review.intent, ""])
+    if review.acceptance_criteria:
+        lines.extend(["## Acceptance Criteria", ""])
+        for criterion in review.acceptance_criteria:
+            icon = _VERDICT_ICONS[criterion.verdict]
+            lines.append(f"- {icon} {criterion.verdict.value} — {criterion.criterion}")
+            if criterion.note:
+                lines.append(f"  - {criterion.note}")
+            lines.extend(_render_evidence(item, review) for item in criterion.evidence)
+        lines.append("")
+    if review.decisions:
+        lines.extend(["## Decisions", ""])
+        for decision in review.decisions:
+            lines.append(f"- **{decision.title}** {decision.description}")
+            lines.extend(_render_evidence(item, review) for item in decision.evidence)
+        lines.append("")
+    return lines
+
+
+_VERDICT_ICONS = {
+    CriterionVerdict.MET: "✅",
+    CriterionVerdict.NOT_MET: "❌",
+    CriterionVerdict.UNVERIFIED: "❔",
+}
 
 
 def _render_finding(index: int, finding: Finding, review: Review) -> list[str]:
