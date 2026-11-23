@@ -24,6 +24,8 @@ BRIEF = {
     "acceptance_criteria": [
         {
             "criterion": "A failed payout is retried at most three times.",
+            "source": "pull_request",
+            "quote": "Retry a failed payout up to three times.",
             "verdict": "met",
             "evidence": [
                 {
@@ -33,7 +35,12 @@ BRIEF = {
             ],
             "note": "The attempt counter is capped.",
         },
-        {"criterion": "A retry is idempotent.", "verdict": "unverified"},
+        {
+            "criterion": "A retry is idempotent.",
+            "source": "jira",
+            "quote": "Retries must be idempotent.",
+            "verdict": "unverified",
+        },
     ],
     "decisions": [
         {
@@ -104,7 +111,12 @@ def test_review_without_a_brief_keeps_old_shape() -> None:
 
 def test_criterion_rejects_an_unknown_verdict() -> None:
     with pytest.raises(ValidationError):
-        AcceptanceCriterion(criterion="x", verdict="maybe")  # type: ignore[arg-type]
+        AcceptanceCriterion(
+            criterion="x",
+            source="jira",
+            quote="x",
+            verdict="maybe",  # type: ignore[arg-type]
+        )
 
 
 def test_brief_models_validate_nested_evidence() -> None:
@@ -273,7 +285,13 @@ def _brief_citing(path: str, start: int, end: int, verdict: str = "met") -> Revi
     return ReviewBrief.model_validate(
         {
             "acceptance_criteria": [
-                {"criterion": "c", "verdict": verdict, "evidence": [cited]}
+                {
+                    "criterion": "c",
+                    "source": "jira",
+                    "quote": "q",
+                    "verdict": verdict,
+                    "evidence": [cited],
+                }
             ],
             "decisions": [{"title": "t", "description": "d", "evidence": [cited]}],
         }
@@ -348,3 +366,91 @@ def test_lenses_and_brief_run_at_the_same_time(tmp_path: Path) -> None:
 
     assert isinstance(result, Review)
     assert result.brief_error == ""
+
+
+def _brief_quoting(*quotes: str) -> ReviewBrief:
+    return ReviewBrief.model_validate(
+        {
+            "acceptance_criteria": [
+                {
+                    "criterion": f"c{index}",
+                    "source": "jira",
+                    "quote": quote,
+                    "verdict": "met",
+                }
+                for index, quote in enumerate(quotes)
+            ]
+        }
+    )
+
+
+def test_stated_criteria_keep_a_quote_found_in_the_named_source() -> None:
+    from review_sheep.brief import keep_stated_criteria
+
+    brief = keep_stated_criteria(
+        _brief_quoting("must  RETRY thrice"),
+        {"jira": "ABC-1\nThe job must retry\nthrice on failure."},
+    )
+
+    assert [c.criterion for c in brief.acceptance_criteria] == ["c0"]
+
+
+def test_stated_criteria_drop_a_quote_the_source_never_said() -> None:
+    from review_sheep.brief import keep_stated_criteria
+
+    brief = keep_stated_criteria(
+        _brief_quoting("must retry thrice", "must log every retry"),
+        {"jira": "The job must retry thrice on failure."},
+    )
+
+    assert [c.criterion for c in brief.acceptance_criteria] == ["c0"]
+
+
+def test_stated_criteria_drop_a_quote_filed_under_the_wrong_source() -> None:
+    from review_sheep.brief import keep_stated_criteria
+
+    # The words are real, but they are in the PR text, not in Jira.
+    brief = keep_stated_criteria(
+        _brief_quoting("must retry thrice"),
+        {"jira": "Something else.", "pull_request": "It must retry thrice."},
+    )
+
+    assert brief.acceptance_criteria == []
+
+
+def test_stated_criteria_drop_an_unknown_source() -> None:
+    from review_sheep.brief import keep_stated_criteria
+
+    brief = keep_stated_criteria(
+        _brief_quoting("must retry thrice"), {"notion": "It must retry thrice."}
+    )
+
+    assert brief.acceptance_criteria == []
+
+
+def test_report_says_when_no_acceptance_criteria_were_found() -> None:
+    from review_sheep.report import render_report
+
+    text = render_report(_review(intent="Add a retry.")).text
+
+    assert "No acceptance criteria found in the provided documents." in text
+
+
+def test_report_does_not_claim_missing_criteria_without_a_brief() -> None:
+    from review_sheep.report import render_report
+
+    plain = render_report(_review()).text
+    failed = render_report(_review(brief_error="TimeoutError: x")).text
+
+    assert "No acceptance criteria found" not in plain
+    assert "No acceptance criteria found" not in failed
+
+
+def test_report_names_where_a_criterion_is_written() -> None:
+    from review_sheep.report import render_report
+
+    brief = ReviewBrief.model_validate(BRIEF)
+    text = render_report(_review(**brief.model_dump())).text
+
+    assert "retried at most three times. (pull_request)" in text
+    assert "A retry is idempotent. (jira)" in text

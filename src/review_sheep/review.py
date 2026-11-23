@@ -20,7 +20,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from review_sheep.backends import ReviewFilesystemBackend
-from review_sheep.brief import BRIEF_SYSTEM_PROMPT, verify_brief
+from review_sheep.brief import (
+    BRIEF_SYSTEM_PROMPT,
+    keep_stated_criteria,
+    verify_brief,
+)
 from review_sheep.checkout import git_changed_files, git_diff
 from review_sheep.domain import (
     CustomLens,
@@ -39,11 +43,12 @@ from review_sheep.lenses import (
     PARALLEL_TOOL_USE_PROMPT,
     LensExecutionError,
     ReviewLens,
+    frame_review_contexts,
     lens_identifier,
     lens_result_schema,
     lens_system_prompt,
     pull_request_description_prompt,
-    review_context_prompt,
+    review_context_texts,
     run_lenses_in_parallel,
     validate_lens_findings,
 )
@@ -117,18 +122,21 @@ class DeepAgentReviewRunner:
         self._contexts = validate_review_contexts(context_providers)
         # The Lenses and the brief run in parallel on one checkout; fetch the
         # caller context once for both. Entries vanish with the checkout.
-        self._context_cache: weakref.WeakKeyDictionary[ReviewCheckout, str] = (
-            weakref.WeakKeyDictionary()
-        )
+        self._context_cache: weakref.WeakKeyDictionary[
+            ReviewCheckout, dict[str, str]
+        ] = weakref.WeakKeyDictionary()
         self._context_lock = threading.Lock()
 
-    def _caller_context(self, checkout: ReviewCheckout) -> str:
+    def _context_texts(self, checkout: ReviewCheckout) -> dict[str, str]:
         with self._context_lock:
             if checkout not in self._context_cache:
-                self._context_cache[checkout] = review_context_prompt(
+                self._context_cache[checkout] = review_context_texts(
                     self._contexts, _pull_request_context(checkout)
                 )
             return self._context_cache[checkout]
+
+    def _caller_context(self, checkout: ReviewCheckout) -> str:
+        return frame_review_contexts(self._context_texts(checkout))
 
     def run(
         self,
@@ -189,7 +197,8 @@ class DeepAgentReviewRunner:
         request += pull_request_description_prompt(
             title=checkout.title, body=checkout.body
         )
-        request += self._caller_context(checkout)
+        caller_context = self._caller_context(checkout)
+        request += caller_context
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
         state = cast(Any, {"messages": [{"role": "user", "content": request}]})
@@ -198,6 +207,13 @@ class DeepAgentReviewRunner:
         ) as context:
             result = context.run(agent.invoke, state)
         brief = ReviewBrief.model_validate(result["structured_response"])
+        brief = keep_stated_criteria(
+            brief,
+            {
+                "pull_request": f"{checkout.title}\n{checkout.body}",
+                **self._context_texts(checkout),
+            },
+        )
         logger.info(
             "checkout.brief.complete criteria=%d decisions=%d",
             len(brief.acceptance_criteria),

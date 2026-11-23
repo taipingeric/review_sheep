@@ -394,6 +394,14 @@ class AcceptanceCriterion(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     criterion: str = Field(min_length=1, description="The condition being checked.")
+    source: str = Field(
+        min_length=1,
+        description='Where it is written: "pull_request" or a caller_context name.',
+    )
+    quote: str = Field(
+        min_length=1,
+        description="The exact words from that source that state the condition.",
+    )
     verdict: CriterionVerdict
     evidence: list[Evidence] = Field(
         default_factory=list,

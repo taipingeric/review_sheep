@@ -64,11 +64,24 @@ def _render_brief(review: Review) -> list[str]:
         lines.extend([f"> ⚠️ Review Brief failed: {review.brief_error}", ""])
     if review.intent:
         lines.extend(["## Intent", "", review.intent, ""])
+    wrote_brief = bool(review.intent or review.decisions)
+    if wrote_brief and not review.acceptance_criteria:
+        lines.extend(
+            [
+                "## Acceptance Criteria",
+                "",
+                "No acceptance criteria found in the provided documents.",
+                "",
+            ]
+        )
     if review.acceptance_criteria:
         lines.extend(["## Acceptance Criteria", ""])
         for criterion in review.acceptance_criteria:
             icon = _VERDICT_ICONS[criterion.verdict]
-            lines.append(f"- {icon} {criterion.verdict.value} — {criterion.criterion}")
+            lines.append(
+                f"- {icon} {criterion.verdict.value} — {criterion.criterion} "
+                f"({criterion.source})"
+            )
             if criterion.note:
                 lines.append(f"  - {criterion.note}")
             lines.extend(_render_evidence(item, review) for item in criterion.evidence)

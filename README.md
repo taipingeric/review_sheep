@@ -513,7 +513,10 @@ The following optional tracing variables are read from the process environment:
   Review Brief (Intent, Acceptance Criteria, Decisions) by default, in parallel
   with the Lenses. Pass `brief=False` or set `REVIEW_BRIEF=false` to skip it. A
   failed Brief leaves the Review intact and records the reason in
-  `Review.brief_error`. The Manifest Review used by the chatbot does not write
+  `Review.brief_error`. Acceptance Criteria come only from the pull request
+  description or caller context: each carries its `source` and an exact `quote`,
+  and a criterion whose quote is not in those documents is dropped. When none is
+  written, the list is empty. The Manifest Review used by the chatbot does not write
   a Brief.
 
 Ask what Review Sheep can do, ask metadata questions, or request a changed-code
