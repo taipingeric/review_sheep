@@ -69,9 +69,30 @@ _Avoid_: checkout, worktree, repository
 
 **Review Context**:
 Caller-provided background text, such as a linked ticket or spec, fetched once
-per Review before any Lens starts and shared with every Lens as untrusted
+per Review and shared with every Lens and the Review Brief as untrusted
 context. It describes intent and is never evidence for a Finding on its own.
 _Avoid_: enrichment, attachment, plugin
+
+**Review Brief**:
+What a reviewer reads in place of the code: the Intent of the change, its
+Acceptance Criteria with a verdict each, and its Decisions. Written by one agent
+that never sees the Findings, in parallel with the Lenses. A Review without a
+Brief leaves these empty; a failed Brief leaves them empty and records the
+reason in `brief_error`.
+_Avoid_: summary, description, overview
+
+**Acceptance Criterion**:
+One condition that the pull request description or a Review Context explicitly
+states, with the named source, the exact quoted words, and a verdict: `met`,
+`not_met`, or `unverified`. A criterion whose quote is not in its named source
+is dropped, so a criterion is never invented. When no document states one, the
+Brief has none.
+_Avoid_: requirement, test case, check
+
+**Decision**:
+One architectural, behavioural, or technical call a change makes, including what
+was chosen not to be built. Part of the Review Brief.
+_Avoid_: choice, design note
 
 **Inquiry**:
 A question about pull requests answered from GitHub metadata alone, producing no

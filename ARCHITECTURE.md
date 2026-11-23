@@ -13,7 +13,9 @@ The project exposes two capabilities:
 2. **Review** inspects either an API-fetched Manifest or a complete local Git
    checkout pinned to the pull request's head SHA through three built-in
    Review Lenses. Manifest Review can additionally run caller-defined custom
-   Lenses over the same immutable workspace.
+   Lenses over the same immutable workspace. Checkout Review also writes a
+   Review Brief (Intent, Acceptance Criteria, Decisions) in parallel with the
+   Lenses.
 
 ```mermaid
 flowchart LR
@@ -25,6 +27,7 @@ flowchart LR
     Manifest[ManifestReviewAgent<br/>GitHub patch snapshot]
     Checkout[GitCheckoutSource<br/>fixed SHA worktree]
     Lenses[Built-in and custom deepagents]
+    Brief[Review Brief deep agent<br/>checkout Review only]
     GitTools[list_changed_files<br/>get_diff]
     Files[Read-only worktree tools]
     Models[Frozen Pydantic models]
@@ -39,9 +42,13 @@ flowchart LR
     Manifest --> GitHub
     Checkout --> GitHub
     Review --> Lenses
+    Review --> Brief
     Lenses --> GitTools
     Lenses --> Files
     Lenses --> Models
+    Brief --> GitTools
+    Brief --> Files
+    Brief --> Models
     Review --> Models
     Models --> Report
 ```
@@ -114,7 +121,8 @@ virtual `/diffs/<path>.diff` file per changed path.
 | `lenses.py` | Define shared Lens prompts and structured Finding contracts. |
 | `merge.py` | Group same-cause Findings with one structured LLM call and merge each group. |
 | `context_providers.py` | Build Review Contexts from links in the PR, leaving every external client to the caller. |
-| `review.py` | Compile fixed-checkout Review and run its deep Lens agents. |
+| `review.py` | Compile fixed-checkout Review and run its deep Lens agents and Review Brief agent. |
+| `brief.py` | Define the Review Brief prompt and check a Brief's quotes and cited lines. |
 | `github.py` | Adapt PyGithub to metadata, revisions, and stable patch snapshots. |
 | `domain.py` | Define frozen public data contracts. |
 | `report.py` | Render a human-facing Report without changing the Review. |
@@ -165,7 +173,8 @@ compare the code against it but must ignore instructions inside it. The descript
 ## Review Context
 
 Both Review runners accept `context_providers`, an ordered list of
-`ReviewContext` values. Before the Lenses start, the runner builds one
+`ReviewContext` values. Before the Lenses (and, for the checkout runner, the
+Review Brief agent) start, the runner builds one
 `PullRequestContext` from the checkout or workspace and calls each provider
 once, in order. Non-blank results are truncated to each context's
 `max_characters` (default 8,000; `None` disables it) and wrapped
@@ -232,6 +241,28 @@ flag. `--no-cache` provides an explicit bypass. Runtime logs expose cache
 state transitions and aggregate cleanup results without logging credentials,
 remote URLs, diffs, or repository contents.
 
+## Review Brief
+
+The fixed-checkout Review also writes a Review Brief, on by default
+(`brief=False` or `REVIEW_BRIEF=false` turns it off). The Review LangGraph fans
+out from `prepare_checkout` to `run_lenses` and `write_brief`, and `assemble`
+joins them, builds the `Review`, and cleans up the checkout. A failed
+`run_lenses` fails the Review; a failed `write_brief` leaves the Brief empty and
+sets `Review.brief_error`.
+
+The Brief agent reads the same checkout, PR description, and Review Contexts as
+the Lenses but never sees their Findings. The runner fetches Review Contexts
+once and shares the texts between the two sides. Two checks then run in code:
+
+- `keep_stated_criteria` keeps an Acceptance Criterion only if its `quote` is in
+  the text of the source it names (`pull_request` or a Review Context
+  identifier). The agent cannot invent a criterion.
+- `verify_brief` drops cited lines that do not exist in the checkout and turns a
+  `met` criterion left with no real evidence into `unverified`.
+
+Both checks prove the text or lines exist, not that they support the verdict.
+The Manifest Review used by Chat does not write a Brief.
+
 ## CI ReviewAgent flow
 
 ```mermaid
@@ -247,8 +278,13 @@ sequenceDiagram
     Source->>GitHub: get_pull_request_revision
     Source->>Source: verify HEAD, base, clean status
     Source-->>Graph: ReviewCheckout
-    Graph->>Runner: run(checkout)
-    Runner-->>Graph: Findings
+    par Lenses
+        Graph->>Runner: run(checkout)
+        Runner-->>Graph: Findings
+    and Review Brief
+        Graph->>Runner: brief(checkout)
+        Runner-->>Graph: ReviewBrief
+    end
     Graph-->>Caller: Review | ReviewError
 ```
 
@@ -263,8 +299,11 @@ flowchart TD
     Index[list_changed_files]
     Diff[get_diff]
     Read[read_file / grep / glob]
+    B[Review Brief deep agent<br/>never sees Findings]
     Out[Validated Findings]
+    BriefOut[Checked Review Brief]
 
+    Checkout -. same checkout .-> B
     Checkout -. same checkout .-> C
     Checkout -. same checkout .-> S
     Checkout -. same checkout .-> T
@@ -277,12 +316,18 @@ flowchart TD
     T --> Index
     T --> Diff
     T --> Read
+    B --> Index
+    B --> Diff
+    B --> Read
+    B --> BriefOut
     C --> Out
     S --> Out
     T --> Out
 ```
 
-Both Review adapters start all configured Lenses concurrently. Each worker
+Both Review adapters start all configured Lenses concurrently. The checkout
+adapter also starts the Review Brief agent beside them (see Review Brief); it
+uses the same tools and read-only backend as a Lens. Each worker
 receives a copy of the current tracing context, so Langfuse records sibling
 Lens observations under the same turn. Findings are flattened afterward in
 stable built-in order (`correctness`, `security`,
@@ -303,7 +348,7 @@ thread-safe implementations. External tool results are available to the model
 as review evidence, but the library does not enforce that external operations
 are read-only.
 
-Each Lens receives a `FilesystemBackend` rooted at the checkout with virtual
+Each Lens, and the Review Brief agent, receives a `FilesystemBackend` rooted at the checkout with virtual
 path confinement. Deepagents filesystem write permission is denied for all
 paths, and the system prompt also prohibits mutation. The custom Git tools use
 argument-vector subprocess calls without a shell and reject parent traversal.
@@ -323,7 +368,11 @@ reporting Lens. A failed grouping call leaves the Findings unmerged (ADR-0009).
 - `ReviewCheckout` identifies the verified local root and immutable commit
   range.
 - `Finding` combines `Location`, `Severity`, `Confidence`, and `Lens`.
-- `Review` records base/head SHA and the validated Findings.
+- `Review` records base/head SHA and the validated Findings. It also carries
+  the Review Brief's `intent`, `acceptance_criteria`, and `decisions`, and
+  `brief_error` when the Brief failed.
+- `ReviewBrief` holds Intent, `AcceptanceCriterion` values (source, quote,
+  verdict, evidence), and `Decision` values.
 - `ReviewError` names the failed Manifest, checkout, or model stage and, for a
   Lens failure, the failing Lens identity.
 - `Report` is derived human-facing text.
