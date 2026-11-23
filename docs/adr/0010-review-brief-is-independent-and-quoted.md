@@ -14,10 +14,12 @@ An Acceptance Criterion must come from a document: the pull request description
 or a Review Context. Each one names its source and quotes the exact words, and
 code drops any criterion whose quote is not in that named source. Without this
 the agent would write the exam and grade it, and a `met` would mean nothing.
-Decisions work the same way: the agent searches the repo for recorded decisions
-(ADRs, RFCs) first. A relevant record becomes a Decision with `source` set to
-its path and the exact quote; code drops it if the quote is not in that file.
-Only when no record applies does the agent write one, with `source: generated`.
+Decisions are one sentence each with a `status`. `confirmed` means a document
+states it (an ADR or RFC found in the repo, the pull request description, or a
+Review Context), with `source` and the exact quote. `needs_decision` means the
+change made a choice nobody stated and a person should approve it. Code checks
+the quote like a criterion's, but a failed check demotes the Decision to
+`needs_decision` instead of dropping it, so a real risk never disappears.
 Evidence lines are checked the same way: lines that do not exist in the checkout
 are dropped, and a `met` left with no real evidence becomes `unverified`.
 

@@ -91,10 +91,13 @@ _Avoid_: requirement, test case, check
 
 **Decision**:
 One architectural, behavioural, or technical call a change makes, including what
-was chosen not to be built. Part of the Review Brief. It has a `source`: the repo
-path of a recorded decision (such as an ADR) with the exact quoted words, or
-`generated` when the agent wrote it from the code. A recorded Decision whose
-quote is not in its file is dropped.
+was chosen not to be built. Part of the Review Brief. One sentence, no
+rationale, with a required `status`. `confirmed`: a document already states it
+(an ADR, the pull request description, or a Review Context), named in `source`
+with the exact `quote`. `needs_decision`: the change makes a choice nobody has
+stated, such as a trade-off, a behaviour change, or a risk, and a person should
+approve it. A `confirmed` Decision whose quote is not in its source becomes
+`needs_decision`; it is never dropped.
 _Avoid_: choice, design note
 
 **Inquiry**:

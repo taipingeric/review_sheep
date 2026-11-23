@@ -7,6 +7,7 @@ from urllib.parse import quote
 
 from review_sheep.domain import (
     CriterionVerdict,
+    DecisionStatus,
     Evidence,
     Finding,
     Lens,
@@ -86,17 +87,19 @@ def _render_brief(review: Review) -> list[str]:
                 lines.append(f"  - {criterion.note}")
             lines.extend(_render_evidence(item, review) for item in criterion.evidence)
         lines.append("")
-    if review.decisions:
-        lines.extend(["## Decisions", ""])
-        for decision in review.decisions:
-            label = (
-                "generated"
-                if decision.source == "generated"
-                else f"recorded in {decision.source}"
-            )
-            lines.append(f"- **{decision.title}** {decision.description} ({label})")
-            if decision.quote:
-                lines.append(f"  - > {' '.join(decision.quote.split())}")
+    confirmed = [d for d in review.decisions if d.status is DecisionStatus.CONFIRMED]
+    needed = [d for d in review.decisions if d.status is DecisionStatus.NEEDS_DECISION]
+    if confirmed:
+        lines.extend(["## Confirmed decisions", ""])
+        for decision in confirmed:
+            lines.append(f"- {decision.decision} ({decision.source})")
+            lines.append(f"  - > {' '.join(decision.quote.split())}")
+            lines.extend(_render_evidence(item, review) for item in decision.evidence)
+        lines.append("")
+    if needed:
+        lines.extend(["## User decision needed", ""])
+        for decision in needed:
+            lines.append(f"- {decision.decision}")
             lines.extend(_render_evidence(item, review) for item in decision.evidence)
         lines.append("")
     return lines

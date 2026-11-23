@@ -522,11 +522,14 @@ The following optional tracing variables are read from the process environment:
   `Review.brief_error`. Acceptance Criteria come only from the pull request
   description or caller context: each carries its `source` and an exact `quote`,
   and a criterion whose quote is not in those documents is dropped. When none is
-  written, the list is empty. Decisions come from recorded ADRs first
-  (`docs/adr/`, `adr/`, `decisions/`, `docs/decisions/`, `rfcs/`): each carries
-  its `source` path and an exact `quote`, and is dropped if the quote is not in
-  that file. Without a relevant record the agent writes the Decision with
-  `source: generated`, and the Report labels each one. The Manifest Review used by the chatbot does not write
+  written, the list is empty. Each Decision is one sentence with a
+  `status`. `confirmed` ones come from an ADR (`docs/adr/`, `adr/`,
+  `decisions/`, `docs/decisions/`, `rfcs/`), the pull request description, or
+  caller context, with `source` and an exact `quote`; if the quote is not in
+  that source, the Decision becomes `needs_decision` instead of vanishing.
+  `needs_decision` ones are choices nobody stated that a person should approve.
+  The Report groups them as "Confirmed decisions" and "User decision needed".
+  The Manifest Review used by the chatbot does not write
   a Brief.
 
 Ask what Review Sheep can do, ask metadata questions, or request a changed-code

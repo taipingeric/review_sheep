@@ -410,29 +410,46 @@ class AcceptanceCriterion(BaseModel):
     note: str = Field(default="", description="Why the verdict holds, in one sentence.")
 
 
+class DecisionStatus(str, Enum):
+    """Whether a Decision was already stated or needs a person to choose."""
+
+    CONFIRMED = "confirmed"
+    NEEDS_DECISION = "needs_decision"
+
+
 class Decision(BaseModel):
-    """One architectural, behavioural, or technical call the change makes."""
+    """One call the change makes: already stated, or waiting for a person."""
 
     model_config = ConfigDict(frozen=True)
 
-    title: str = Field(min_length=1, description="One-sentence headline.")
-    description: str = Field(
-        min_length=1,
-        description="What was chosen, and what was left out or not built.",
-    )
-    source: str = Field(
-        default="generated",
+    decision: str = Field(
         min_length=1,
         description=(
-            "Repo path of the recorded decision (such as an ADR) this restates, "
-            'or "generated" when the agent wrote it from the code.'
+            "One sentence, no rationale. For needs_decision, it names the "
+            "risk or question."
+        ),
+    )
+    status: DecisionStatus
+    source: str = Field(
+        default="",
+        description=(
+            "Confirmed only: where it is written. A repo path (such as an ADR), "
+            '"pull_request", or a caller_context name.'
         ),
     )
     quote: str = Field(
         default="",
-        description="The exact words from the recorded file; empty if generated.",
+        description="Confirmed only: the exact words from that source.",
     )
     evidence: list[Evidence] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def confirmed_needs_source_and_quote(self) -> Decision:
+        if self.status is DecisionStatus.CONFIRMED and not (
+            self.source.strip() and self.quote.strip()
+        ):
+            raise ValueError("a confirmed Decision needs a source and a quote")
+        return self
 
 
 class ReviewBrief(BaseModel):

@@ -22,7 +22,7 @@ from langgraph.graph.state import CompiledStateGraph
 from review_sheep.backends import ReviewFilesystemBackend
 from review_sheep.brief import (
     BRIEF_SYSTEM_PROMPT,
-    keep_recorded_decisions,
+    check_decisions,
     keep_stated_criteria,
     verify_brief,
 )
@@ -208,14 +208,12 @@ class DeepAgentReviewRunner:
         ) as context:
             result = context.run(agent.invoke, state)
         brief = ReviewBrief.model_validate(result["structured_response"])
-        brief = keep_stated_criteria(
-            brief,
-            {
-                "pull_request": f"{checkout.title}\n{checkout.body}",
-                **self._context_texts(checkout),
-            },
-        )
-        brief = keep_recorded_decisions(brief, checkout.root)
+        texts = {
+            "pull_request": f"{checkout.title}\n{checkout.body}",
+            **self._context_texts(checkout),
+        }
+        brief = keep_stated_criteria(brief, texts)
+        brief = check_decisions(brief, texts, checkout.root)
         logger.info(
             "checkout.brief.complete criteria=%d decisions=%d",
             len(brief.acceptance_criteria),
