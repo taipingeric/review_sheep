@@ -138,6 +138,7 @@ def main(
             "source": checkout,
             "model": model,
             "instructions": config.instructions,
+            "brief": config.brief,
         }
         if config.lens_concurrency is not None:
             reviewer_options["lens_concurrency"] = config.lens_concurrency

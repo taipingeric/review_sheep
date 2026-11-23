@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import threading
+import weakref
 from collections.abc import Sequence
 from pathlib import PurePosixPath
 from typing import Any, NotRequired, Protocol, TypedDict, cast
@@ -104,7 +106,7 @@ class DeepAgentReviewRunner:
         custom_lenses: Sequence[CustomLens] = (),
         lens_concurrency: int | None = None,
         context_providers: Sequence[ReviewContext] = (),
-        brief: bool = False,
+        brief: bool = True,
     ) -> None:
         self._brief = brief
         self._model = model
@@ -113,6 +115,20 @@ class DeepAgentReviewRunner:
         self._custom_lenses = validate_custom_lenses(custom_lenses)
         self._lens_concurrency = lens_concurrency
         self._contexts = validate_review_contexts(context_providers)
+        # The Lenses and the brief run in parallel on one checkout; fetch the
+        # caller context once for both. Entries vanish with the checkout.
+        self._context_cache: weakref.WeakKeyDictionary[ReviewCheckout, str] = (
+            weakref.WeakKeyDictionary()
+        )
+        self._context_lock = threading.Lock()
+
+    def _caller_context(self, checkout: ReviewCheckout) -> str:
+        with self._context_lock:
+            if checkout not in self._context_cache:
+                self._context_cache[checkout] = review_context_prompt(
+                    self._contexts, _pull_request_context(checkout)
+                )
+            return self._context_cache[checkout]
 
     def run(
         self,
@@ -129,9 +145,7 @@ class DeepAgentReviewRunner:
             checkout.head_sha,
         )
         effective_config = ensure_config(config)
-        caller_context = review_context_prompt(
-            self._contexts, _pull_request_context(checkout)
-        )
+        caller_context = self._caller_context(checkout)
         findings = run_lenses_in_parallel(
             lambda lens: self._run_lens(
                 lens, checkout, caller_context, config=effective_config
@@ -175,9 +189,7 @@ class DeepAgentReviewRunner:
         request += pull_request_description_prompt(
             title=checkout.title, body=checkout.body
         )
-        request += review_context_prompt(
-            self._contexts, _pull_request_context(checkout)
-        )
+        request += self._caller_context(checkout)
         if self._instructions:
             request += f"\n\nCaller instructions:\n{self._instructions}"
         state = cast(Any, {"messages": [{"role": "user", "content": request}]})
@@ -473,12 +485,12 @@ def create_deep_review_agent(
     custom_lenses: Sequence[CustomLens] = (),
     lens_concurrency: int | None = None,
     context_providers: Sequence[ReviewContext] = (),
-    brief: bool = False,
+    brief: bool = True,
 ) -> ReviewAgent:
     """Create the production Review workflow with one deep agent per Lens.
 
-    Pass ``brief=True`` to also write Intent, Acceptance Criteria, and Decisions
-    onto the Review with one extra, independent agent.
+    By default one extra, independent agent also writes Intent, Acceptance
+    Criteria, and Decisions onto the Review. Pass ``brief=False`` to skip it.
     """
     return create_review_agent(
         source=source,

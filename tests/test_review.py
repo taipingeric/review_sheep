@@ -299,6 +299,7 @@ def test_deep_review_builds_each_lens_on_the_same_read_only_checkout(
         model="openai:gpt-5-mini",
         instructions="Focus on authorization regressions.",
         lens_concurrency=1,
+        brief=False,
     ).review(repo="acme/widgets", number=42)
 
     assert isinstance(result, Review)
@@ -417,6 +418,7 @@ def test_deep_review_runs_custom_lenses_after_built_ins_in_declaration_order(
         model="openai:gpt-test",
         custom_lenses=custom_lenses,
         tools=[fetch_db_metadata],
+        brief=False,
     ).review(repo="acme/widgets", number=42)
 
     assert isinstance(result, Review)
@@ -804,7 +806,7 @@ def test_deep_review_fetches_context_once_and_shares_it_with_every_lens(
             head_ref="abc-1-gate",
         )
     ]
-    assert len(agents) == len(Lens)
+    assert len(agents) == len(Lens) + 1  # every Lens, plus the brief
     assert all(
         '<caller_context name="jira">\nABC-1: The gate must lock.\n'
         "</caller_context>" in agent.calls[0]["messages"][0]["content"]

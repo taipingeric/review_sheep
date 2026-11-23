@@ -213,13 +213,15 @@ def test_deep_runner_brief_uses_one_agent_with_the_pr_description(
     assert brief.acceptance_criteria[0].verdict is CriterionVerdict.MET
 
 
-def test_the_deep_review_agent_is_off_by_default_and_opt_in() -> None:
-    off = create_deep_review_agent(source=Source.__new__(Source), model="m")
-    on = create_deep_review_agent(source=Source.__new__(Source), model="m", brief=True)
+def test_the_deep_review_agent_writes_a_brief_by_default_and_can_opt_out() -> None:
+    on = create_deep_review_agent(source=Source.__new__(Source), model="m")
+    off = create_deep_review_agent(
+        source=Source.__new__(Source), model="m", brief=False
+    )
 
     assert off is not None and on is not None
-    assert review_module.DeepAgentReviewRunner(model="m").brief_enabled is False
-    assert review_module.DeepAgentReviewRunner(model="m", brief=True).brief_enabled
+    assert review_module.DeepAgentReviewRunner(model="m").brief_enabled is True
+    assert not review_module.DeepAgentReviewRunner(model="m", brief=False).brief_enabled
 
 
 def _review(**extra: Any) -> Review:

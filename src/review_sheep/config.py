@@ -119,6 +119,7 @@ class CIConfig:
     cache_mirror_retention: float = 30 * 24 * 60 * 60
     cache_cleanup: bool = False
     lens_concurrency: int | None = None
+    brief: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "repo", _required(self.repo, "repo"))
@@ -165,6 +166,8 @@ class CIConfig:
         if not isinstance(self.cache_cleanup, bool):
             raise TypeError("cache_cleanup must be true or false")
         _validate_positive_int_or_none(self.lens_concurrency, "lens_concurrency")
+        if not isinstance(self.brief, bool):
+            raise TypeError("brief must be true or false")
 
     @classmethod
     def from_environment(
@@ -187,6 +190,7 @@ class CIConfig:
         cache_mirror_retention: float | None = None,
         cache_cleanup: bool | None = None,
         lens_concurrency: int | None = None,
+        brief: bool | None = None,
     ) -> CIConfig:
         """Build CI config from environment, with explicit values winning."""
         values = os.environ if environ is None else environ
@@ -296,6 +300,7 @@ class CIConfig:
                 "REVIEW_LENS_CONCURRENCY",
                 lens_concurrency,
             ),
+            brief=_environment_bool(values, "REVIEW_BRIEF", brief, True),
         )
 
 

@@ -456,3 +456,33 @@ def test_ci_config_rejects_invalid_model_tier_and_non_positive_number_directly()
             anthropic_auth_token="anthropic-token",
             base_url="https://gateway.example",
         )
+
+
+_CI_ENV = {
+    "GITHUB_REPOSITORY": "acme/widgets",
+    "REVIEW_PR_NUMBER": "42",
+    "REVIEW_CHECKOUT": "/workspace",
+    "GITHUB_TOKEN": "github-token",
+    "ANTHROPIC_AUTH_TOKEN": "anthropic-token",
+    "ANTHROPIC_BASE_URL": "https://gateway.example",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "gateway-sonnet",
+}
+
+
+def test_ci_config_writes_a_review_brief_by_default() -> None:
+    assert CIConfig.from_environment(_CI_ENV).brief is True
+
+
+def test_ci_config_can_turn_the_review_brief_off() -> None:
+    off = CIConfig.from_environment({**_CI_ENV, "REVIEW_BRIEF": "false"})
+    explicit = CIConfig.from_environment(
+        {**_CI_ENV, "REVIEW_BRIEF": "false"}, brief=True
+    )
+
+    assert off.brief is False
+    assert explicit.brief is True
+
+
+def test_ci_config_rejects_a_bad_review_brief_value() -> None:
+    with pytest.raises(RuntimeError, match="REVIEW_BRIEF must be true or false"):
+        CIConfig.from_environment({**_CI_ENV, "REVIEW_BRIEF": "maybe"})

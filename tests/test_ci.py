@@ -144,6 +144,7 @@ No Findings.
     assert reviewer_configs[0]["model"] == "test:model"
     assert reviewer_configs[0]["instructions"] == "Focus on authorization."
     assert reviewer_configs[0]["lens_concurrency"] == 2
+    assert reviewer_configs[0]["brief"] is True
     assert model_configs == [
         {
             "model": "gateway-sonnet",

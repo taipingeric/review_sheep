@@ -509,6 +509,12 @@ The following optional tracing variables are read from the process environment:
 - MLflow: `MLFLOW_TRACKING_URI` and optional `MLFLOW_EXPERIMENT_NAME`.
 - Review execution: optional `REVIEW_LENS_CONCURRENCY` limits the number of
   Lens agents running concurrently. It must be a positive integer.
+- Review Brief: `create_deep_review_agent` and the CI adapter also write a
+  Review Brief (Intent, Acceptance Criteria, Decisions) by default, in parallel
+  with the Lenses. Pass `brief=False` or set `REVIEW_BRIEF=false` to skip it. A
+  failed Brief leaves the Review intact and records the reason in
+  `Review.brief_error`. The Manifest Review used by the chatbot does not write
+  a Brief.
 
 Ask what Review Sheep can do, ask metadata questions, or request a changed-code
 Review naturally. The classifier selects the correct agent path; ReviewBot asks

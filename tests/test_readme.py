@@ -22,6 +22,7 @@ def test_readme_documents_explicit_secret_injection_and_env_example() -> None:
     assert "never pass secrets as CLI" in readme
     assert "does not load a local `.env` file" in readme
     assert "REVIEW_LENS_CONCURRENCY=4" in env_example
+    assert "REVIEW_BRIEF=true" in env_example
     assert "OPENAI_API_KEY" not in env_example
 
 
