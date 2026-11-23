@@ -420,6 +420,18 @@ class Decision(BaseModel):
         min_length=1,
         description="What was chosen, and what was left out or not built.",
     )
+    source: str = Field(
+        default="generated",
+        min_length=1,
+        description=(
+            "Repo path of the recorded decision (such as an ADR) this restates, "
+            'or "generated" when the agent wrote it from the code.'
+        ),
+    )
+    quote: str = Field(
+        default="",
+        description="The exact words from the recorded file; empty if generated.",
+    )
     evidence: list[Evidence] = Field(default_factory=list)
 
 

@@ -372,7 +372,7 @@ reporting Lens. A failed grouping call leaves the Findings unmerged (ADR-0009).
   the Review Brief's `intent`, `acceptance_criteria`, and `decisions`, and
   `brief_error` when the Brief failed.
 - `ReviewBrief` holds Intent, `AcceptanceCriterion` values (source, quote,
-  verdict, evidence), and `Decision` values.
+  verdict, evidence), and `Decision` values (with `source`: a repo path or `generated`, and `quote`).
 - `ReviewError` names the failed Manifest, checkout, or model stage and, for a
   Lens failure, the failing Lens identity.
 - `Report` is derived human-facing text.

@@ -454,3 +454,87 @@ def test_report_names_where_a_criterion_is_written() -> None:
 
     assert "retried at most three times. (pull_request)" in text
     assert "A retry is idempotent. (jira)" in text
+
+
+def _decision_brief(source: str, quote: str) -> ReviewBrief:
+    return ReviewBrief.model_validate(
+        {
+            "decisions": [
+                {
+                    "title": "t",
+                    "description": "d",
+                    "source": source,
+                    "quote": quote,
+                }
+            ]
+        }
+    )
+
+
+def test_a_generated_decision_is_kept(tmp_path: Path) -> None:
+    from review_sheep.brief import keep_recorded_decisions
+
+    brief = keep_recorded_decisions(_decision_brief("generated", ""), tmp_path)
+
+    assert len(brief.decisions) == 1
+
+
+def test_a_recorded_decision_is_kept_when_its_quote_is_in_the_file(
+    tmp_path: Path,
+) -> None:
+    from review_sheep.brief import keep_recorded_decisions
+
+    (tmp_path / "docs" / "adr").mkdir(parents=True)
+    (tmp_path / "docs/adr/0001.md").write_text("We retry in the\njob, not the client.")
+
+    brief = keep_recorded_decisions(
+        _decision_brief("docs/adr/0001.md", "retry in the job"), tmp_path
+    )
+
+    assert len(brief.decisions) == 1
+
+
+@pytest.mark.parametrize(
+    ("source", "quote"),
+    [
+        ("docs/adr/0001.md", "a made-up sentence"),  # quote not in the file
+        ("docs/adr/missing.md", "retry in the job"),  # no such file
+        ("../outside.md", "retry in the job"),  # outside the checkout
+        ("docs/adr/0001.md", ""),  # recorded but nothing quoted
+    ],
+)
+def test_a_recorded_decision_that_cannot_be_checked_is_dropped(
+    tmp_path: Path, source: str, quote: str
+) -> None:
+    from review_sheep.brief import keep_recorded_decisions
+
+    root = tmp_path / "repo"
+    (root / "docs" / "adr").mkdir(parents=True)
+    (root / "docs/adr/0001.md").write_text("We retry in the job, not the client.")
+    (tmp_path / "outside.md").write_text("We retry in the job, not the client.")
+
+    brief = keep_recorded_decisions(_decision_brief(source, quote), root)
+
+    assert brief.decisions == []
+
+
+def test_report_labels_each_decision_by_source() -> None:
+    from review_sheep.report import render_report
+
+    review = _review(
+        decisions=[
+            {"title": "A", "description": "a", "source": "generated"},
+            {
+                "title": "B",
+                "description": "b",
+                "source": "docs/adr/0001.md",
+                "quote": "We retry in the job.",
+            },
+        ]
+    )
+
+    text = render_report(review).text
+
+    assert "**A** a (generated)" in text
+    assert "**B** b (recorded in docs/adr/0001.md)" in text
+    assert "> We retry in the job." in text

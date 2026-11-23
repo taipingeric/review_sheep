@@ -22,6 +22,7 @@ from langgraph.graph.state import CompiledStateGraph
 from review_sheep.backends import ReviewFilesystemBackend
 from review_sheep.brief import (
     BRIEF_SYSTEM_PROMPT,
+    keep_recorded_decisions,
     keep_stated_criteria,
     verify_brief,
 )
@@ -214,6 +215,7 @@ class DeepAgentReviewRunner:
                 **self._context_texts(checkout),
             },
         )
+        brief = keep_recorded_decisions(brief, checkout.root)
         logger.info(
             "checkout.brief.complete criteria=%d decisions=%d",
             len(brief.acceptance_criteria),

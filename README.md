@@ -316,10 +316,12 @@ metadata:
 ```python
 from langchain_core.tools import tool
 
+
 @tool
 def fetch_db_metadata(table: str) -> str:
     """Fetch read-only metadata for one database table."""
     return metadata_client.describe_table(table)
+
 
 reviewer = create_deep_review_agent(
     source=checkout,
@@ -355,15 +357,19 @@ from review_sheep import (
     notion_page_context,
 )
 
+
 def fetch_jira_issue(key: str) -> str:
     issue = jira_client.issue(key)
     return f"{issue.fields.summary}\n\n{issue.fields.description or ''}"
 
+
 def fetch_notion_page(page_id: str) -> str:
     return my_notion_page_to_text(notion_client, page_id)
 
+
 def fetch_release_notes(pull_request: PullRequestContext) -> str:
     return release_notes_for(pull_request.repo, pull_request.head_ref)
+
 
 reviewer = create_deep_review_agent(
     source=checkout,
@@ -516,7 +522,11 @@ The following optional tracing variables are read from the process environment:
   `Review.brief_error`. Acceptance Criteria come only from the pull request
   description or caller context: each carries its `source` and an exact `quote`,
   and a criterion whose quote is not in those documents is dropped. When none is
-  written, the list is empty. The Manifest Review used by the chatbot does not write
+  written, the list is empty. Decisions come from recorded ADRs first
+  (`docs/adr/`, `adr/`, `decisions/`, `docs/decisions/`, `rfcs/`): each carries
+  its `source` path and an exact `quote`, and is dropped if the quote is not in
+  that file. Without a relevant record the agent writes the Decision with
+  `source: generated`, and the Report labels each one. The Manifest Review used by the chatbot does not write
   a Brief.
 
 Ask what Review Sheep can do, ask metadata questions, or request a changed-code

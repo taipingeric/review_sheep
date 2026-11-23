@@ -91,7 +91,10 @@ _Avoid_: requirement, test case, check
 
 **Decision**:
 One architectural, behavioural, or technical call a change makes, including what
-was chosen not to be built. Part of the Review Brief.
+was chosen not to be built. Part of the Review Brief. It has a `source`: the repo
+path of a recorded decision (such as an ADR) with the exact quoted words, or
+`generated` when the agent wrote it from the code. A recorded Decision whose
+quote is not in its file is dropped.
 _Avoid_: choice, design note
 
 **Inquiry**:

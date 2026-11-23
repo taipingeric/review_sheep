@@ -89,7 +89,14 @@ def _render_brief(review: Review) -> list[str]:
     if review.decisions:
         lines.extend(["## Decisions", ""])
         for decision in review.decisions:
-            lines.append(f"- **{decision.title}** {decision.description}")
+            label = (
+                "generated"
+                if decision.source == "generated"
+                else f"recorded in {decision.source}"
+            )
+            lines.append(f"- **{decision.title}** {decision.description} ({label})")
+            if decision.quote:
+                lines.append(f"  - > {' '.join(decision.quote.split())}")
             lines.extend(_render_evidence(item, review) for item in decision.evidence)
         lines.append("")
     return lines
